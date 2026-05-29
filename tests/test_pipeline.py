@@ -131,6 +131,34 @@ async def test_blocking_only_when_autocompact_off():
     assert (await run_context_management(state, config, LoopCallbacks())).blocked is True
 
 
+async def test_collapse_suppresses_autocompact(monkeypatch):
+    # With collapse enabled and a read/search span available, collapse owns the
+    # headroom: Layer 5 must NOT replace the canonical store this turn.
+    config = AgentConfig(context_window=200_000, context_collapse=True)
+    state = _state(190_000)  # above BOTH collapse (180k) and auto-compact (187k)
+    state.messages = [{"role": "user", "content": "investigate"}]
+    for i in range(4):
+        state.messages += [
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{"id": f"r{i}", "type": "function", "function": {"name": "Read"}}],
+            },
+            {"role": "tool", "tool_call_id": f"r{i}", "content": "contents"},
+        ]
+    canonical_before = list(state.messages)
+
+    monkeypatch.setattr(
+        litellm, "acompletion", make_acompletion([text_chunk("span summary"), usage_chunk(1, 1)])
+    )
+
+    await run_context_management(state, config, LoopCallbacks())
+
+    # Collapse committed a span; auto-compact did NOT replace the canonical store.
+    assert len(state.collapse.commits) == 1
+    assert state.messages == canonical_before
+
+
 async def test_loop_returns_blocked_without_calling_model(monkeypatch):
     config = AgentConfig(context_window=200_000, auto_compact=False)
     state = _state(198_000)
