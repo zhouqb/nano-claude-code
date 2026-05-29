@@ -19,6 +19,7 @@ from rich.table import Table
 from nano_claude.agent.loop import LoopCallbacks, query_loop
 from nano_claude.agent.types import AgentConfig, LoopState, StopReason
 from nano_claude.compaction.compactor import compact_conversation
+from nano_claude.compaction.snip import snip_messages
 from nano_claude.context import build_system_prompt
 from nano_claude.permissions.modes import PermissionMode
 from nano_claude.permissions.prompt import make_cli_prompter
@@ -93,6 +94,10 @@ def _make_callbacks() -> LoopCallbacks:
         _end_stream()
         console.print("[yellow]Context nearing limit.[/yellow]")
 
+    def on_snip(removed: int) -> None:
+        _end_stream()
+        console.print(f"[dim]✂ Snipped {removed} stale message(s).[/dim]")
+
     return LoopCallbacks(
         on_text=on_text,
         on_assistant_start=on_assistant_start,
@@ -102,6 +107,7 @@ def _make_callbacks() -> LoopCallbacks:
         on_compact=on_compact,
         on_compact_disabled=on_compact_disabled,
         on_context_warning=on_context_warning,
+        on_snip=on_snip,
     )
 
 
@@ -169,6 +175,11 @@ async def _repl(config: AgentConfig, settings: Settings, state: LoopState) -> No
                     console.print("[dim]⤢ Conversation compacted.[/dim]")
                 else:
                     console.print("[red]Compaction failed.[/red]")
+                continue
+            if user_input == "/snip":
+                result = snip_messages(state.messages)
+                state.messages = result.messages
+                console.print(f"[dim]✂ Snipped {result.removed} stale message(s).[/dim]")
                 continue
 
             user_msg = {"role": "user", "content": user_input}
