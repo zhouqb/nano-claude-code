@@ -8,6 +8,7 @@ so the shape stays stable, but nothing in Phase 1 depends on them.
 from __future__ import annotations
 
 import asyncio
+import os
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
@@ -61,6 +62,7 @@ class AgentConfig:
     permission_mode: PermissionMode = PermissionMode.DEFAULT
     auto_compact: bool = True
     context_window: int = 200_000  # overridden at startup from litellm.get_model_info()
+    cwd: str = field(default_factory=os.getcwd)  # working directory for tool execution
 
 
 @dataclass
