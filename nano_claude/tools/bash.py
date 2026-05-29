@@ -8,6 +8,7 @@ import re
 from pydantic import BaseModel, Field
 
 from nano_claude.tools.base import PermissionDecision, Tool, ToolContext, ToolResult
+from nano_claude.tools.overflow import save_overflow, truncation_note
 
 DEFAULT_TIMEOUT_S = 120
 MAX_OUTPUT_BYTES = 60_000
@@ -77,11 +78,10 @@ class BashTool(Tool):
 
         out = stdout.decode(errors="replace")
         if len(out) > MAX_OUTPUT_BYTES:
-            # TODO: spill the full output to a temp file (e.g. under the session
-            # dir) and reference its path in the truncated result, so large
-            # outputs aren't lost permanently. Factor this into a shared helper
-            # reused by Grep/Glob (see their matching TODOs).
-            out = out[:MAX_OUTPUT_BYTES] + "\n... (output truncated)"
+            spill = save_overflow(out, "Bash", context)
+            out = out[:MAX_OUTPUT_BYTES] + truncation_note(
+                spill, shown=MAX_OUTPUT_BYTES, total=len(out)
+            )
 
         if proc.returncode != 0:
             return ToolResult(

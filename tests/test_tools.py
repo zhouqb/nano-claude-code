@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 from nano_claude.permissions.modes import PermissionMode
 from nano_claude.tools.base import ToolContext
@@ -17,7 +18,10 @@ from nano_claude.tools.write import WriteInput, WriteTool
 
 def ctx(cwd: str) -> ToolContext:
     return ToolContext(
-        cwd=str(cwd), cancel_event=asyncio.Event(), permission_mode=PermissionMode.DEFAULT
+        cwd=str(cwd),
+        cancel_event=asyncio.Event(),
+        permission_mode=PermissionMode.DEFAULT,
+        output_dir=Path(str(cwd)) / "_overflow",
     )
 
 
@@ -194,3 +198,51 @@ def test_is_dangerous_patterns():
     assert is_dangerous("sudo rm -rf /")
     assert not is_dangerous("rm -rf ./build")
     assert not is_dangerous("echo hello")
+
+
+# --- output overflow (spill to disk) ----------------------------------------
+
+
+def _spill_files(tmp_path):
+    return list((tmp_path / "_overflow").glob("*.txt"))
+
+
+async def test_bash_spills_large_output(tmp_path):
+    # Produce well over MAX_OUTPUT_BYTES (60k) of stdout.
+    result = await BashTool().call(
+        BashInput(command="python3 -c \"print('x' * 70000)\""), ctx(tmp_path)
+    )
+    assert not result.is_error
+    assert "output truncated" in result.output
+    assert "Full output saved to" in result.output
+    files = _spill_files(tmp_path)
+    assert len(files) == 1
+    assert len(files[0].read_text()) >= 70000  # full output preserved
+
+
+async def test_grep_spills_large_output(tmp_path):
+    big = tmp_path / "big.txt"
+    big.write_text("".join(f"match line number {i}\n" for i in range(4000)))
+    result = await GrepTool().call(GrepInput(pattern="match"), ctx(tmp_path))
+    assert not result.is_error
+    assert "Full output saved to" in result.output
+    assert len(_spill_files(tmp_path)) == 1
+
+
+async def test_glob_spills_when_over_max_results(tmp_path):
+    src = tmp_path / "src"
+    src.mkdir()
+    for i in range(1100):
+        (src / f"f{i}.py").write_text("")
+    result = await GlobTool().call(GlobInput(pattern="src/*.py"), ctx(tmp_path))
+    assert "matches" in result.output
+    assert "Full output saved to" in result.output
+    files = _spill_files(tmp_path)
+    assert len(files) == 1
+    assert len(files[0].read_text().splitlines()) == 1100  # every match preserved
+
+
+async def test_no_spill_when_output_small(tmp_path):
+    result = await BashTool().call(BashInput(command="echo hi"), ctx(tmp_path))
+    assert "truncated" not in result.output
+    assert not (tmp_path / "_overflow").exists()

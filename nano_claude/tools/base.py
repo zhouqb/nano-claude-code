@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel
@@ -24,6 +25,9 @@ class ToolContext:
     cwd: str
     cancel_event: asyncio.Event
     permission_mode: PermissionMode
+    # Directory where tools spill truncated output. Set by the loop to the
+    # session's outputs folder; None falls back to a temp dir (see overflow.py).
+    output_dir: Path | None = None
 
 
 @dataclass

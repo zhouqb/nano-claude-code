@@ -7,6 +7,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from nano_claude.tools.base import PermissionDecision, Tool, ToolContext, ToolResult
+from nano_claude.tools.overflow import save_overflow, truncation_note
 
 MAX_RESULTS = 1000
 
@@ -41,11 +42,9 @@ class GlobTool(Tool):
         if not matches:
             return ToolResult(output="No files matched.")
 
-        shown = matches[:MAX_RESULTS]
-        out = "\n".join(str(p) for p in shown)
+        out = "\n".join(str(p) for p in matches[:MAX_RESULTS])
         if len(matches) > MAX_RESULTS:
-            # TODO: spill the full match list to a temp file and reference its
-            # path here so truncated results aren't lost. (Shared helper with
-            # Bash/Grep; see those TODOs.)
-            out += f"\n... ({len(matches) - MAX_RESULTS} more matches truncated)"
+            full = "\n".join(str(p) for p in matches)
+            spill = save_overflow(full, "Glob", context)
+            out += truncation_note(spill, shown=MAX_RESULTS, total=len(matches), unit="matches")
         return ToolResult(output=out)
