@@ -78,6 +78,8 @@ class LoopState:
     consecutive_compact_failures: int = 0
     # Populated in Phase 3 (session storage); unused in Phase 1.
     storage: Any | None = None
+    # Layer 1 (budget) frozen-decision state; provisioned by the pipeline.
+    budget: Any | None = None
 
 
 @dataclass

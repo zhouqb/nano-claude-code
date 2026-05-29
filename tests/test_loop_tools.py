@@ -7,11 +7,12 @@ from types import SimpleNamespace
 
 import litellm
 
-from nano_claude.agent.loop import _session_output_dir, query_loop
+from nano_claude.agent.loop import query_loop
 from nano_claude.agent.types import AgentConfig, LoopState, StopReason
 from nano_claude.permissions.manager import PromptOutcome
 from nano_claude.permissions.modes import PermissionMode
 from nano_claude.permissions.settings import Settings
+from nano_claude.session.storage import session_output_dir
 from tests.conftest import (
     make_sequential_acompletion,
     text_chunk,
@@ -143,9 +144,9 @@ async def test_invalid_json_args_returns_error(tmp_path, monkeypatch):
 
 
 def test_session_output_dir_none_without_storage():
-    assert _session_output_dir(None) is None
+    assert session_output_dir(None) is None
 
 
 def test_session_output_dir_derived_from_storage(tmp_path):
     storage = SimpleNamespace(path=tmp_path / "sid.jsonl", session_id="sid")
-    assert _session_output_dir(storage) == tmp_path / "sid-outputs"
+    assert session_output_dir(storage) == tmp_path / "sid-outputs"

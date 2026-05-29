@@ -22,10 +22,10 @@ from nano_claude.tools.base import ToolContext
 SPILL_TTL_S = 7 * 24 * 3600  # 7 days
 
 
-def _resolve_dir(context: ToolContext) -> Path:
-    """The session's outputs dir if set, else a shared temp dir."""
-    if context.output_dir is not None:
-        return context.output_dir
+def _resolve_dir(output_dir: Path | None) -> Path:
+    """The given outputs dir if set, else a shared temp dir."""
+    if output_dir is not None:
+        return output_dir
     return Path(tempfile.gettempdir()) / "nano-claude-outputs"
 
 
@@ -42,18 +42,28 @@ def _prune_old(directory: Path) -> None:
         pass
 
 
-def save_overflow(content: str, tool_name: str, context: ToolContext) -> Path | None:
-    """Write ``content`` to a uniquely-named spill file; return its path or None."""
+def save_overflow_to(content: str, name: str, output_dir: Path | None) -> Path | None:
+    """Write ``content`` to ``<output_dir>/<name>.txt``; return its path or None.
+
+    The filename is taken verbatim (no timestamp/uuid), so callers that pass a
+    stable ``name`` get a deterministic, idempotent path — re-spilling the same
+    logical content overwrites in place rather than leaking a new file.
+    """
     try:
-        directory = _resolve_dir(context)
+        directory = _resolve_dir(output_dir)
         directory.mkdir(parents=True, exist_ok=True)
         _prune_old(directory)
-        name = f"{tool_name}-{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}.txt"
-        path = directory / name
+        path = directory / f"{name}.txt"
         path.write_text(content, encoding="utf-8")
         return path
     except OSError:
         return None
+
+
+def save_overflow(content: str, tool_name: str, context: ToolContext) -> Path | None:
+    """Write ``content`` to a uniquely-named spill file; return its path or None."""
+    unique = f"{tool_name}-{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
+    return save_overflow_to(content, unique, context.output_dir)
 
 
 def truncation_note(path: Path | None, *, shown: int, total: int, unit: str = "bytes") -> str:

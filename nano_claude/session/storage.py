@@ -89,6 +89,17 @@ def session_file(cwd: str, session_id: str, root: Path = DEFAULT_ROOT) -> Path:
     return project_dir(cwd, root) / f"{session_id}.jsonl"
 
 
+def session_output_dir(storage: SessionStorage | None) -> Path | None:
+    """Where tools/compaction spill large output: a session-scoped folder.
+
+    Lives beside the session JSONL so spills are cleaned up with it. Returns
+    None when there's no session storage (callers fall back to a temp dir).
+    """
+    if storage is None:
+        return None
+    return storage.path.parent / f"{storage.session_id}-outputs"
+
+
 class SessionStorage:
     """Buffers records and appends them to a session JSONL file."""
 

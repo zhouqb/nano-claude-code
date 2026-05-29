@@ -34,6 +34,11 @@ from nano_claude.compaction.auto_compact import (
     should_warn,
 )
 from nano_claude.compaction.compactor import compact_conversation
+from nano_claude.compaction.tool_result_budget import (
+    ContentReplacementState,
+    apply_tool_result_budget,
+)
+from nano_claude.session.storage import session_output_dir
 
 if TYPE_CHECKING:
     from nano_claude.agent.loop import LoopCallbacks
@@ -55,24 +60,27 @@ async def run_context_management(
 ) -> ContextView:
     """Run the compaction layers and return the message view for this turn.
 
-    The canonical history lives in ``state.messages``. View-only layers (1/3/4,
-    landing later) will build on a copy; in this foundation the only active
-    transform is Layer 5 (auto-compaction), which replaces ``state.messages`` in
-    place — so the returned view is ``state.messages`` itself.
+    The canonical history lives in ``state.messages``. View-only layers build on
+    a copy; Layer 5 (auto-compaction) replaces ``state.messages`` in place, after
+    which the view is reset to the freshly-compacted canonical store.
     """
-    # NOTE: future view-only layers start from a copy and transform it:
-    #     view = list(state.messages)
-    #     view = apply_tool_result_budget(view, state)   # Layer 1
-    #     view = snip_messages(view).messages            # Layer 2 (may prune canonical too)
-    #     view = microcompact(view)                      # Layer 3
-    #     view = apply_collapses(view, state, config)    # Layer 4
+    if state.budget is None:
+        state.budget = ContentReplacementState()
+    output_dir = session_output_dir(state.storage)
+
+    # View-only layers transform a copy; state.messages stays canonical.
+    view = list(state.messages)
+    view = apply_tool_result_budget(view, state.budget, output_dir)  # Layer 1
+    # Layers 2-4 (snip / microcompact / collapse) slot in here in later PRs.
 
     # --- Layer 5: Auto-Compact -------------------------------------------
     # Last resort: summarize the whole conversation and replace it. When it
-    # runs it mutates state.messages, so the view tracks the canonical store.
+    # runs it mutates state.messages, so we reset the view to the compacted store
+    # (the per-turn view-only layers re-derive cleanly next turn anyway).
     if should_auto_compact(state, config):
         compacted = await compact_conversation(state, config)
         if compacted:
+            view = list(state.messages)
             if callbacks.on_compact:
                 callbacks.on_compact()
         elif circuit_broken(state):
@@ -91,4 +99,4 @@ async def run_context_management(
     # is naturally skipped right after compacting.
     blocked = not config.auto_compact and should_block(state, config)
 
-    return ContextView(messages=state.messages, blocked=blocked)
+    return ContextView(messages=view, blocked=blocked)
