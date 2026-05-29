@@ -1,19 +1,20 @@
 """CLI entry point and interactive REPL.
 
-Phase 2: the loop runs tools. The REPL loads persistent permission settings,
-wires an interactive permission prompter, and renders tool activity as it
-happens.
+Phase 3: conversations are persisted to JSONL as they happen, and ``--resume``
+reopens a previous session (repaired if it was interrupted mid-turn).
 """
 
 from __future__ import annotations
 
 import asyncio
 import os
+from datetime import datetime
 
 import click
 from prompt_toolkit import PromptSession
 from prompt_toolkit.patch_stdout import patch_stdout
 from rich.console import Console
+from rich.table import Table
 
 from nano_claude.agent.loop import LoopCallbacks, query_loop
 from nano_claude.agent.types import AgentConfig, LoopState, StopReason
@@ -21,6 +22,8 @@ from nano_claude.context import build_system_prompt
 from nano_claude.permissions.modes import PermissionMode
 from nano_claude.permissions.prompt import make_cli_prompter
 from nano_claude.permissions.settings import Settings
+from nano_claude.session.restore import list_sessions, load_session
+from nano_claude.session.storage import SessionStorage, new_session_id, session_file
 from nano_claude.tools.base import ToolResult
 
 DEFAULT_MODEL = os.environ.get("NANO_CLAUDE_MODEL", "anthropic/claude-sonnet-4-6")
@@ -86,54 +89,113 @@ def _make_callbacks() -> LoopCallbacks:
     )
 
 
-async def _repl(config: AgentConfig, settings: Settings) -> None:
-    state = LoopState()
-    state.messages.append({"role": "system", "content": build_system_prompt(config.cwd)})
+def _pick_session(cwd: str):
+    """Show recent sessions for cwd and let the user choose one to resume."""
+    sessions = list_sessions(cwd)
+    if not sessions:
+        console.print("[yellow]No previous sessions found; starting a new one.[/yellow]")
+        return None
 
+    table = Table(title="Resumable sessions", show_lines=False)
+    table.add_column("#", justify="right")
+    table.add_column("When")
+    table.add_column("Model")
+    table.add_column("First message")
+    for i, s in enumerate(sessions[:20], start=1):
+        when = datetime.fromtimestamp(s.mtime).strftime("%Y-%m-%d %H:%M")
+        table.add_row(str(i), when, s.model, s.preview)
+    console.print(table)
+
+    raw = input("Select a session number (Enter to start new): ").strip()
+    if not raw:
+        return None
+    try:
+        idx = int(raw) - 1
+    except ValueError:
+        console.print("[yellow]Not a number; starting a new session.[/yellow]")
+        return None
+    if 0 <= idx < len(sessions):
+        return sessions[idx]
+    console.print("[yellow]Out of range; starting a new session.[/yellow]")
+    return None
+
+
+async def _repl(config: AgentConfig, settings: Settings, state: LoopState) -> None:
     session: PromptSession = PromptSession()
     prompter = make_cli_prompter(session)
+    storage = state.storage
 
     console.print(
         f"[bold cyan]nano-claude-code[/bold cyan] [dim]({config.model}, "
-        f"mode={config.permission_mode.value})[/dim]"
+        f"mode={config.permission_mode.value}, session={storage.session_id})[/dim]"
     )
     console.print("[dim]Type your message. /quit or Ctrl-D to exit.[/dim]\n")
 
-    while True:
-        try:
-            with patch_stdout():
-                user_input = await session.prompt_async("› ")
-        except (EOFError, KeyboardInterrupt):
-            console.print("\n[dim]Goodbye.[/dim]")
-            return
+    try:
+        while True:
+            try:
+                with patch_stdout():
+                    user_input = await session.prompt_async("› ")
+            except (EOFError, KeyboardInterrupt):
+                console.print("\n[dim]Goodbye.[/dim]")
+                return
 
-        user_input = user_input.strip()
-        if not user_input:
-            continue
-        if user_input in ("/quit", "/exit"):
-            console.print("[dim]Goodbye.[/dim]")
-            return
+            user_input = user_input.strip()
+            if not user_input:
+                continue
+            if user_input in ("/quit", "/exit"):
+                console.print("[dim]Goodbye.[/dim]")
+                return
 
-        state.messages.append({"role": "user", "content": user_input})
-        state.cancel_event.clear()
+            user_msg = {"role": "user", "content": user_input}
+            state.messages.append(user_msg)
+            storage.append_message(user_msg)
+            state.cancel_event.clear()
 
-        try:
-            result = await query_loop(
-                state,
-                config,
-                settings=settings,
-                prompter=prompter,
-                callbacks=_make_callbacks(),
-            )
-        except Exception as exc:  # noqa: BLE001 - surface any provider error to the user
-            console.print(f"\n[red]Error:[/red] {exc}")
-            # Drop the unanswered user turn so the next request stays valid.
-            state.messages.pop()
-            continue
+            try:
+                result = await query_loop(
+                    state,
+                    config,
+                    settings=settings,
+                    prompter=prompter,
+                    callbacks=_make_callbacks(),
+                )
+            except Exception as exc:  # noqa: BLE001 - surface any provider error to the user
+                console.print(f"\n[red]Error:[/red] {exc}")
+                continue
+            finally:
+                await storage.flush()
 
-        console.print()
-        if result.reason is StopReason.MAX_TURNS:
-            console.print("[yellow]Reached max turns.[/yellow]")
+            console.print()
+            if result.reason is StopReason.MAX_TURNS:
+                console.print("[yellow]Reached max turns.[/yellow]")
+    finally:
+        await storage.flush()
+        console.print("[dim]Session saved. Resume with `nano-claude --resume`.[/dim]")
+
+
+def _init_state(config: AgentConfig, resume: bool) -> LoopState:
+    """Build the loop state and storage, either fresh or resumed from disk."""
+    state = LoopState()
+
+    chosen = _pick_session(config.cwd) if resume else None
+    if chosen is not None:
+        storage = SessionStorage(chosen.path, chosen.session_id)
+        state.messages = load_session(chosen.path)
+        state.storage = storage
+        console.print(
+            f"[dim]Resumed {len(state.messages)} message(s) from {chosen.session_id}.[/dim]"
+        )
+        return state
+
+    session_id = new_session_id()
+    storage = SessionStorage(session_file(config.cwd, session_id), session_id)
+    storage.append_metadata(model=config.model, cwd=config.cwd)
+    system_msg = {"role": "system", "content": build_system_prompt(config.cwd)}
+    state.messages.append(system_msg)
+    storage.append_message(system_msg)
+    state.storage = storage
+    return state
 
 
 @click.command()
@@ -146,7 +208,8 @@ async def _repl(config: AgentConfig, settings: Settings) -> None:
     show_default=True,
     help="Permission mode: default | acceptEdits | bypassPermissions.",
 )
-def cli(model: str, max_turns: int, permission_mode: str) -> None:
+@click.option("--resume", is_flag=True, help="Resume a previous session in this directory.")
+def cli(model: str, max_turns: int, permission_mode: str, resume: bool) -> None:
     """nano-claude-code: a minimal Claude Code clone."""
     settings = Settings.load()
     config = AgentConfig(
@@ -156,8 +219,10 @@ def cli(model: str, max_turns: int, permission_mode: str) -> None:
     )
     config.context_window = _resolve_context_window(model, config.context_window)
 
+    state = _init_state(config, resume)
+
     try:
-        asyncio.run(_repl(config, settings))
+        asyncio.run(_repl(config, settings, state))
     except KeyboardInterrupt:
         pass
 

@@ -197,6 +197,12 @@ async def query_loop(
         output_dir=_session_output_dir(state.storage),
     )
 
+    def record(message: dict) -> None:
+        """Append a message to state and persist it (for crash recovery)."""
+        state.messages.append(message)
+        if state.storage is not None:
+            state.storage.append_message(message)
+
     while True:
         if state.cancel_event.is_set():
             return LoopResult(StopReason.ABORTED, state.turn_count, "")
@@ -245,11 +251,11 @@ async def query_loop(
         final_text = "".join(text_parts)
 
         if not tool_calls:
-            state.messages.append({"role": "assistant", "content": final_text})
+            record({"role": "assistant", "content": final_text})
             return LoopResult(StopReason.COMPLETED, state.turn_count, final_text)
 
         # Record the assistant turn (text + the calls it requested).
-        state.messages.append(
+        record(
             {
                 "role": "assistant",
                 "content": final_text or None,
@@ -264,5 +270,5 @@ async def query_loop(
         contents = await asyncio.gather(*(_run_call(plan, context, callbacks) for plan in plans))
 
         for tc, content in zip(tool_calls, contents, strict=True):
-            state.messages.append({"role": "tool", "tool_call_id": tc["id"], "content": content})
+            record({"role": "tool", "tool_call_id": tc["id"], "content": content})
         # Loop continues: the model sees the tool results next iteration.
