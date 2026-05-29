@@ -22,6 +22,9 @@ import litellm
 from pydantic import ValidationError
 
 from nano_claude.agent.types import AgentConfig, LoopResult, LoopState, StopReason
+from nano_claude.compaction.auto_compact import circuit_broken, should_auto_compact, should_warn
+from nano_claude.compaction.compactor import compact_conversation
+from nano_claude.compaction.token_counter import record_input_tokens
 from nano_claude.permissions.manager import (
     Prompter,
     PromptOutcome,
@@ -49,6 +52,9 @@ class LoopCallbacks:
     on_tool_start: Callable[[str, dict], None] | None = None
     on_tool_end: Callable[[str, ToolResult], None] | None = None
     on_tool_denied: Callable[[str, str], None] | None = None
+    on_compact: Callable[[], None] | None = None
+    on_compact_disabled: Callable[[], None] | None = None
+    on_context_warning: Callable[[], None] | None = None
 
 
 async def _deny_all_prompter(tool, args, prompt_text) -> PromptOutcome:
@@ -209,6 +215,18 @@ async def query_loop(
         if state.turn_count >= config.max_turns:
             return LoopResult(StopReason.MAX_TURNS, state.turn_count, "")
 
+        # Pre-call context management: compact before we'd overflow, else warn.
+        if should_auto_compact(state, config):
+            compacted = await compact_conversation(state, config)
+            if compacted and callbacks.on_compact:
+                callbacks.on_compact()
+            elif not compacted and circuit_broken(state):
+                config.auto_compact = False
+                if callbacks.on_compact_disabled:
+                    callbacks.on_compact_disabled()
+        elif should_warn(state, config) and callbacks.on_context_warning:
+            callbacks.on_context_warning()
+
         text_parts: list[str] = []
         tool_calls: list[dict] = []
         last_chunk = None
@@ -246,6 +264,7 @@ async def query_loop(
 
         if last_chunk is not None:
             state.token_usage.update_from_litellm(last_chunk)
+            record_input_tokens(state, last_chunk)
         state.turn_count += 1
 
         final_text = "".join(text_parts)
