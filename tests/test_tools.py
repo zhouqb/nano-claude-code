@@ -1,0 +1,185 @@
+"""Tests for the built-in tools."""
+
+from __future__ import annotations
+
+import asyncio
+
+from nano_claude.permissions.modes import PermissionMode
+from nano_claude.tools.base import ToolContext
+from nano_claude.tools.bash import BashInput, BashTool, is_dangerous
+from nano_claude.tools.edit import EditInput, EditTool
+from nano_claude.tools.glob_tool import GlobInput, GlobTool
+from nano_claude.tools.grep import GrepInput, GrepTool
+from nano_claude.tools.read import ReadInput, ReadTool
+from nano_claude.tools.registry import BASE_TOOLS, get_tool
+from nano_claude.tools.write import WriteInput, WriteTool
+
+
+def ctx(cwd: str) -> ToolContext:
+    return ToolContext(
+        cwd=str(cwd), cancel_event=asyncio.Event(), permission_mode=PermissionMode.DEFAULT
+    )
+
+
+# --- registry ---------------------------------------------------------------
+
+
+def test_registry_exposes_six_tools():
+    assert len(BASE_TOOLS) == 6
+    assert get_tool("Read") is not None
+    assert get_tool("Nonexistent") is None
+
+
+def test_api_schema_shape():
+    schema = ReadTool().to_api_schema()
+    assert schema["type"] == "function"
+    assert schema["function"]["name"] == "Read"
+    assert "file_path" in schema["function"]["parameters"]["properties"]
+
+
+# --- Read -------------------------------------------------------------------
+
+
+async def test_read_returns_numbered_lines(tmp_path):
+    f = tmp_path / "a.txt"
+    f.write_text("alpha\nbeta\n")
+    result = await ReadTool().call(ReadInput(file_path=str(f)), ctx(tmp_path))
+    assert not result.is_error
+    assert "1\talpha" in result.output
+    assert "2\tbeta" in result.output
+
+
+async def test_read_missing_file_errors(tmp_path):
+    result = await ReadTool().call(ReadInput(file_path=str(tmp_path / "no.txt")), ctx(tmp_path))
+    assert result.is_error
+
+
+async def test_read_offset_and_limit(tmp_path):
+    f = tmp_path / "a.txt"
+    f.write_text("\n".join(str(i) for i in range(1, 11)))
+    result = await ReadTool().call(ReadInput(file_path=str(f), offset=2, limit=3), ctx(tmp_path))
+    assert "3\t3" in result.output
+    assert "truncated" in result.output
+
+
+# --- Write ------------------------------------------------------------------
+
+
+async def test_write_creates_file(tmp_path):
+    target = tmp_path / "sub" / "new.txt"
+    result = await WriteTool().call(
+        WriteInput(file_path=str(target), content="hello\nworld\n"), ctx(tmp_path)
+    )
+    assert not result.is_error
+    assert target.read_text() == "hello\nworld\n"
+
+
+async def test_write_permission_is_ask(tmp_path):
+    decision = await WriteTool().check_permissions(
+        WriteInput(file_path=str(tmp_path / "x.txt"), content="x"), ctx(tmp_path)
+    )
+    assert decision.behavior == "ask"
+
+
+# --- Edit -------------------------------------------------------------------
+
+
+async def test_edit_replaces_unique_string(tmp_path):
+    f = tmp_path / "a.txt"
+    f.write_text("foo bar baz")
+    result = await EditTool().call(
+        EditInput(file_path=str(f), old_string="bar", new_string="qux"), ctx(tmp_path)
+    )
+    assert not result.is_error
+    assert f.read_text() == "foo qux baz"
+
+
+async def test_edit_non_unique_without_replace_all_errors(tmp_path):
+    f = tmp_path / "a.txt"
+    f.write_text("x x x")
+    result = await EditTool().call(
+        EditInput(file_path=str(f), old_string="x", new_string="y"), ctx(tmp_path)
+    )
+    assert result.is_error
+    assert "not unique" in result.output
+
+
+async def test_edit_replace_all(tmp_path):
+    f = tmp_path / "a.txt"
+    f.write_text("x x x")
+    result = await EditTool().call(
+        EditInput(file_path=str(f), old_string="x", new_string="y", replace_all=True),
+        ctx(tmp_path),
+    )
+    assert not result.is_error
+    assert f.read_text() == "y y y"
+
+
+async def test_edit_missing_string_errors(tmp_path):
+    f = tmp_path / "a.txt"
+    f.write_text("hello")
+    result = await EditTool().call(
+        EditInput(file_path=str(f), old_string="absent", new_string="z"), ctx(tmp_path)
+    )
+    assert result.is_error
+
+
+# --- Glob -------------------------------------------------------------------
+
+
+async def test_glob_finds_files(tmp_path):
+    (tmp_path / "a.py").write_text("")
+    (tmp_path / "b.txt").write_text("")
+    result = await GlobTool().call(GlobInput(pattern="*.py"), ctx(tmp_path))
+    assert "a.py" in result.output
+    assert "b.txt" not in result.output
+
+
+# --- Grep -------------------------------------------------------------------
+
+
+async def test_grep_finds_matches(tmp_path):
+    (tmp_path / "a.txt").write_text("needle here\nhaystack\n")
+    result = await GrepTool().call(GrepInput(pattern="needle"), ctx(tmp_path))
+    assert not result.is_error
+    assert "needle" in result.output
+
+
+async def test_grep_no_matches(tmp_path):
+    (tmp_path / "a.txt").write_text("haystack\n")
+    result = await GrepTool().call(GrepInput(pattern="needle"), ctx(tmp_path))
+    assert not result.is_error
+    assert "No matches" in result.output
+
+
+# --- Bash -------------------------------------------------------------------
+
+
+async def test_bash_runs_command(tmp_path):
+    result = await BashTool().call(BashInput(command="echo hi"), ctx(tmp_path))
+    assert not result.is_error
+    assert result.output == "hi"
+
+
+async def test_bash_nonzero_exit_is_error(tmp_path):
+    result = await BashTool().call(BashInput(command="exit 3"), ctx(tmp_path))
+    assert result.is_error
+    assert "exit code 3" in result.output
+
+
+async def test_bash_timeout(tmp_path):
+    result = await BashTool().call(BashInput(command="sleep 5", timeout=1), ctx(tmp_path))
+    assert result.is_error
+    assert "timed out" in result.output
+
+
+async def test_bash_dangerous_denied(tmp_path):
+    decision = await BashTool().check_permissions(BashInput(command="rm -rf /"), ctx(tmp_path))
+    assert decision.behavior == "deny"
+
+
+def test_is_dangerous_patterns():
+    assert is_dangerous("rm -rf /")
+    assert is_dangerous("sudo rm -rf /")
+    assert not is_dangerous("rm -rf ./build")
+    assert not is_dangerous("echo hello")
