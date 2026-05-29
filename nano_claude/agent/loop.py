@@ -15,6 +15,7 @@ import asyncio
 import json
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import litellm
@@ -53,6 +54,18 @@ class LoopCallbacks:
 async def _deny_all_prompter(tool, args, prompt_text) -> PromptOutcome:
     """Fallback prompter used when none is supplied (non-interactive contexts)."""
     return PromptOutcome.DENY_ONCE
+
+
+def _session_output_dir(storage: Any | None) -> Path | None:
+    """Where tools spill truncated output: a session-scoped folder, or None.
+
+    Returns None when there's no session storage (the tools then fall back to a
+    temp dir). Once session storage is wired (Phase 3), spills live alongside the
+    session's JSONL so they're cleaned up with it.
+    """
+    if storage is None:
+        return None
+    return storage.path.parent / f"{storage.session_id}-outputs"
 
 
 async def _call_with_retry(make_call: Callable[[], Awaitable]):
@@ -181,6 +194,7 @@ async def query_loop(
         cwd=config.cwd,
         cancel_event=state.cancel_event,
         permission_mode=config.permission_mode,
+        output_dir=_session_output_dir(state.storage),
     )
 
     while True:
