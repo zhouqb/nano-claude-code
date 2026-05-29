@@ -43,10 +43,33 @@ def usage_chunk(prompt_tokens: int, completion_tokens: int):
     )
 
 
+def tool_call_chunk(index: int, call_id: str, name: str, arguments: str):
+    """A streaming chunk carrying an OpenAI-style tool_call delta."""
+    tc = SimpleNamespace(
+        index=index,
+        id=call_id,
+        function=SimpleNamespace(name=name, arguments=arguments),
+    )
+    return SimpleNamespace(
+        choices=[SimpleNamespace(delta=SimpleNamespace(content=None, tool_calls=[tc]))],
+        usage=None,
+    )
+
+
 def make_acompletion(chunks):
     """Build an async ``acompletion`` stand-in returning ``FakeStream(chunks)``."""
 
     async def _acompletion(*args, **kwargs):
         return FakeStream(chunks)
+
+    return _acompletion
+
+
+def make_sequential_acompletion(streams: Iterable):
+    """Return successive ``FakeStream``s on each call (for multi-turn loops)."""
+    it = iter([FakeStream(s) for s in streams])
+
+    async def _acompletion(*args, **kwargs):
+        return next(it)
 
     return _acompletion

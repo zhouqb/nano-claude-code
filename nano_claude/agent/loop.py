@@ -1,19 +1,35 @@
 """Core streaming query loop.
 
-Phase 1 scope: a single streaming model call per turn, no tool dispatch. The
-loop is shaped as the agentic ``while`` loop from the plan so that Phase 2 can
-add tool collection + dispatch without restructuring. With no tools wired in,
-the model never emits tool calls, so each loop resolves in one iteration.
+Phase 2 scope: the loop now advertises tools to the model, accumulates
+streamed ``tool_calls``, gates each call through the permission manager, and
+dispatches the allowed ones concurrently, appending one ``tool`` message per
+call before looping again. The loop ends when the model returns no tool calls.
+
+Permission *prompts* are resolved sequentially (so two ``ask`` tools in one
+turn don't fight over the terminal); the actual tool *execution* is concurrent.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
 
 import litellm
+from pydantic import ValidationError
 
 from nano_claude.agent.types import AgentConfig, LoopResult, LoopState, StopReason
+from nano_claude.permissions.manager import (
+    Prompter,
+    PromptOutcome,
+    has_permission_to_use_tool,
+)
+from nano_claude.permissions.settings import Settings
+from nano_claude.tools.base import ToolContext, ToolResult
+from nano_claude.tools.registry import get_tool, get_tools
 
 # Status codes worth retrying (rate limits, transient upstream errors).
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 529}
@@ -22,6 +38,34 @@ BASE_DELAY_S = 1.0
 
 # Callback invoked with each text delta as it streams in.
 TextCallback = Callable[[str], None]
+
+
+@dataclass
+class LoopCallbacks:
+    """Optional display hooks; the REPL wires these to rich output."""
+
+    on_text: TextCallback | None = None
+    on_assistant_start: Callable[[], None] | None = None
+    on_tool_start: Callable[[str, dict], None] | None = None
+    on_tool_end: Callable[[str, ToolResult], None] | None = None
+    on_tool_denied: Callable[[str, str], None] | None = None
+
+
+async def _deny_all_prompter(tool, args, prompt_text) -> PromptOutcome:
+    """Fallback prompter used when none is supplied (non-interactive contexts)."""
+    return PromptOutcome.DENY_ONCE
+
+
+def _session_output_dir(storage: Any | None) -> Path | None:
+    """Where tools spill truncated output: a session-scoped folder, or None.
+
+    Returns None when there's no session storage (the tools then fall back to a
+    temp dir). Once session storage is wired (Phase 3), spills live alongside the
+    session's JSONL so they're cleaned up with it.
+    """
+    if storage is None:
+        return None
+    return storage.path.parent / f"{storage.session_id}-outputs"
 
 
 async def _call_with_retry(make_call: Callable[[], Awaitable]):
@@ -40,30 +84,135 @@ async def _call_with_retry(make_call: Callable[[], Awaitable]):
             await asyncio.sleep(BASE_DELAY_S * (2**attempt))
 
 
+def _merge_tool_call_deltas(acc: list[dict], deltas) -> None:
+    """Merge OpenAI-style streamed tool_call deltas (keyed by index)."""
+    for d in deltas:
+        idx = getattr(d, "index", 0) or 0
+        while len(acc) <= idx:
+            acc.append({"id": None, "name": None, "arguments": ""})
+        slot = acc[idx]
+        if getattr(d, "id", None):
+            slot["id"] = d.id
+        fn = getattr(d, "function", None)
+        if fn is not None:
+            if getattr(fn, "name", None):
+                slot["name"] = fn.name
+            if getattr(fn, "arguments", None):
+                slot["arguments"] += fn.arguments
+
+
+def _to_assistant_tool_calls(tool_calls: list[dict]) -> list[dict]:
+    """Render accumulated calls into the OpenAI assistant-message shape."""
+    return [
+        {
+            "id": tc["id"],
+            "type": "function",
+            "function": {"name": tc["name"], "arguments": tc["arguments"] or "{}"},
+        }
+        for tc in tool_calls
+    ]
+
+
+# A resolved plan for one tool call: either ready-to-run or a fixed result string.
+@dataclass
+class _CallPlan:
+    tool: Any | None = None
+    args_model: Any | None = None
+    args_dict: dict | None = None
+    fixed_content: str | None = None  # set when the call won't run (error/denied)
+
+
+async def _resolve_call(
+    tc: dict,
+    context: ToolContext,
+    settings: Settings,
+    prompter: Prompter,
+    callbacks: LoopCallbacks,
+) -> _CallPlan:
+    """Validate args and resolve permissions for a single tool call."""
+    name = tc.get("name")
+    tool = get_tool(name) if name else None
+    if tool is None:
+        return _CallPlan(fixed_content=f"Error: unknown tool '{name}'.")
+
+    try:
+        parsed = json.loads(tc.get("arguments") or "{}")
+    except json.JSONDecodeError as exc:
+        return _CallPlan(fixed_content=f"Error: tool arguments were not valid JSON: {exc}")
+
+    try:
+        args_model = tool.input_schema.model_validate(parsed)
+    except ValidationError as exc:
+        return _CallPlan(fixed_content=f"Error: invalid arguments for {name}: {exc}")
+
+    decision = await has_permission_to_use_tool(tool, args_model, context, settings, prompter)
+    if decision.behavior != "allow":
+        if callbacks.on_tool_denied:
+            callbacks.on_tool_denied(name, decision.reason)
+        return _CallPlan(fixed_content=f"Permission denied: {decision.reason or 'denied'}")
+
+    return _CallPlan(tool=tool, args_model=args_model, args_dict=parsed)
+
+
+async def _run_call(plan: _CallPlan, context: ToolContext, callbacks: LoopCallbacks) -> str:
+    """Execute a resolved call (or return its fixed content)."""
+    if plan.fixed_content is not None:
+        return plan.fixed_content
+    if context.cancel_event.is_set():
+        return "[Interrupted]"
+
+    if callbacks.on_tool_start:
+        callbacks.on_tool_start(plan.tool.name, plan.args_dict or {})
+    try:
+        result = await plan.tool.call(plan.args_model, context)
+    except Exception as exc:  # noqa: BLE001 - never let a tool crash the loop
+        result = ToolResult.fail(f"Tool raised an exception: {exc}")
+    if callbacks.on_tool_end:
+        callbacks.on_tool_end(plan.tool.name, result)
+    return result.output
+
+
 async def query_loop(
     state: LoopState,
     config: AgentConfig,
+    *,
+    settings: Settings | None = None,
+    prompter: Prompter | None = None,
     on_text: TextCallback | None = None,
+    callbacks: LoopCallbacks | None = None,
 ) -> LoopResult:
-    """Run the agent loop until the model stops requesting tools.
+    """Run the agent loop until the model stops requesting tools."""
+    settings = settings or Settings()
+    prompter = prompter or _deny_all_prompter
+    callbacks = callbacks or LoopCallbacks()
+    if on_text is not None:
+        callbacks.on_text = on_text
 
-    In Phase 1 there are no tools, so this performs one streaming completion and
-    returns ``StopReason.COMPLETED``.
-    """
+    tools = get_tools(config.permission_mode)
+    tool_schemas = [t.to_api_schema() for t in tools]
+    context = ToolContext(
+        cwd=config.cwd,
+        cancel_event=state.cancel_event,
+        permission_mode=config.permission_mode,
+        output_dir=_session_output_dir(state.storage),
+    )
+
     while True:
         if state.cancel_event.is_set():
             return LoopResult(StopReason.ABORTED, state.turn_count, "")
-
         if state.turn_count >= config.max_turns:
             return LoopResult(StopReason.MAX_TURNS, state.turn_count, "")
 
         text_parts: list[str] = []
+        tool_calls: list[dict] = []
         last_chunk = None
+        started = False
 
         response = await _call_with_retry(
             lambda: litellm.acompletion(
                 model=config.model,
                 messages=state.messages,
+                tools=tool_schemas or None,
                 stream=True,
                 stream_options={"include_usage": True},
             )
@@ -79,16 +228,41 @@ async def query_loop(
             delta = choices[0].delta
             content = getattr(delta, "content", None)
             if content:
+                if not started and callbacks.on_assistant_start:
+                    callbacks.on_assistant_start()
+                started = True
                 text_parts.append(content)
-                if on_text is not None:
-                    on_text(content)
+                if callbacks.on_text:
+                    callbacks.on_text(content)
+            tc_deltas = getattr(delta, "tool_calls", None)
+            if tc_deltas:
+                _merge_tool_call_deltas(tool_calls, tc_deltas)
 
         if last_chunk is not None:
             state.token_usage.update_from_litellm(last_chunk)
         state.turn_count += 1
 
         final_text = "".join(text_parts)
-        state.messages.append({"role": "assistant", "content": final_text})
 
-        # Phase 2 will collect tool_calls here and continue the loop when present.
-        return LoopResult(StopReason.COMPLETED, state.turn_count, final_text)
+        if not tool_calls:
+            state.messages.append({"role": "assistant", "content": final_text})
+            return LoopResult(StopReason.COMPLETED, state.turn_count, final_text)
+
+        # Record the assistant turn (text + the calls it requested).
+        state.messages.append(
+            {
+                "role": "assistant",
+                "content": final_text or None,
+                "tool_calls": _to_assistant_tool_calls(tool_calls),
+            }
+        )
+
+        # Resolve permissions sequentially, then execute allowed calls concurrently.
+        plans = [
+            await _resolve_call(tc, context, settings, prompter, callbacks) for tc in tool_calls
+        ]
+        contents = await asyncio.gather(*(_run_call(plan, context, callbacks) for plan in plans))
+
+        for tc, content in zip(tool_calls, contents, strict=True):
+            state.messages.append({"role": "tool", "tool_call_id": tc["id"], "content": content})
+        # Loop continues: the model sees the tool results next iteration.
