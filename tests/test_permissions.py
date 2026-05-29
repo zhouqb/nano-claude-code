@@ -36,6 +36,19 @@ def test_parenthesised_arg_match():
     assert not matches_rule(rule, "Bash", {"command": "rm -rf x"})
 
 
+def test_nested_parentheses_in_arg_pattern():
+    # The arg pattern itself contains parentheses; only the matching outer ")"
+    # should be stripped, leaving the inner parens intact.
+    rule = PermissionRule("Bash(echo (hi))", "allow")
+    assert matches_rule(rule, "Bash", {"command": "echo (hi)"})
+    assert not matches_rule(rule, "Bash", {"command": "echo hi"})
+
+    # Combined with a glob inside the parenthesised section.
+    glob_rule = PermissionRule("Bash(git log (*))", "allow")
+    assert matches_rule(glob_rule, "Bash", {"command": "git log (oneline)"})
+    assert not matches_rule(glob_rule, "Bash", {"command": "git status"})
+
+
 def test_first_match_returns_first():
     rules = [PermissionRule("Read", "allow"), PermissionRule("*", "deny")]
     assert first_match(rules, "Read", {}).decision == "allow"

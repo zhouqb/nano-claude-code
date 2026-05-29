@@ -33,7 +33,14 @@ def matches_rule(rule: PermissionRule, tool_name: str, args: dict[str, Any]) -> 
     if "(" not in rule.pattern:
         return fnmatch.fnmatch(tool_name, rule.pattern)
 
-    name_part, arg_pattern = rule.pattern.rstrip(")").split("(", 1)
+    # Split on the FIRST "(" and strip only the single matching trailing ")",
+    # so the argument pattern may itself contain parentheses
+    # (e.g. "Bash(git log --pretty=(short))").
+    open_idx = rule.pattern.index("(")
+    name_part = rule.pattern[:open_idx]
+    arg_pattern = rule.pattern[open_idx + 1 :]
+    if arg_pattern.endswith(")"):
+        arg_pattern = arg_pattern[:-1]
     if not fnmatch.fnmatch(tool_name, name_part):
         return False
     arg_key = _PRIMARY_ARG.get(tool_name)
