@@ -1,7 +1,8 @@
 """CLI entry point and interactive REPL.
 
-Phase 1: a bare conversation loop (no tools). Reads user input, runs the agent
-loop, streams the assistant's reply, and repeats until the user exits.
+Phase 2: the loop runs tools. The REPL loads persistent permission settings,
+wires an interactive permission prompter, and renders tool activity as it
+happens.
 """
 
 from __future__ import annotations
@@ -14,10 +15,13 @@ from prompt_toolkit import PromptSession
 from prompt_toolkit.patch_stdout import patch_stdout
 from rich.console import Console
 
-from nano_claude.agent.loop import query_loop
+from nano_claude.agent.loop import LoopCallbacks, query_loop
 from nano_claude.agent.types import AgentConfig, LoopState, StopReason
 from nano_claude.context import build_system_prompt
 from nano_claude.permissions.modes import PermissionMode
+from nano_claude.permissions.prompt import make_cli_prompter
+from nano_claude.permissions.settings import Settings
+from nano_claude.tools.base import ToolResult
 
 DEFAULT_MODEL = os.environ.get("NANO_CLAUDE_MODEL", "anthropic/claude-sonnet-4-6")
 
@@ -36,11 +40,58 @@ def _resolve_context_window(model: str, fallback: int) -> int:
     return int(window) if window else fallback
 
 
-async def _repl(config: AgentConfig) -> None:
+def _summarize_args(args: dict) -> str:
+    for key in ("command", "file_path", "pattern", "path"):
+        if key in args and args[key]:
+            return str(args[key])
+    return ", ".join(f"{k}={v!r}" for k, v in list(args.items())[:2])
+
+
+def _make_callbacks() -> LoopCallbacks:
+    state = {"streaming": False}
+
+    def on_assistant_start() -> None:
+        console.print("[bold green]assistant[/bold green]")
+        state["streaming"] = True
+
+    def on_text(delta: str) -> None:
+        console.print(delta, end="", markup=False, highlight=False)
+
+    def _end_stream() -> None:
+        if state["streaming"]:
+            console.print()
+            state["streaming"] = False
+
+    def on_tool_start(name: str, args: dict) -> None:
+        _end_stream()
+        console.print(f"[cyan]⚙ {name}[/cyan]([dim]{_summarize_args(args)}[/dim])")
+
+    def on_tool_end(name: str, result: ToolResult) -> None:
+        style = "red" if result.is_error else "dim"
+        preview = result.output.strip().splitlines()
+        head = preview[0] if preview else ""
+        more = f" (+{len(preview) - 1} more lines)" if len(preview) > 1 else ""
+        console.print(f"  [{style}]{head}{more}[/{style}]")
+
+    def on_tool_denied(name: str, reason: str) -> None:
+        _end_stream()
+        console.print(f"[yellow]✗ {name} denied[/yellow] [dim]({reason})[/dim]")
+
+    return LoopCallbacks(
+        on_text=on_text,
+        on_assistant_start=on_assistant_start,
+        on_tool_start=on_tool_start,
+        on_tool_end=on_tool_end,
+        on_tool_denied=on_tool_denied,
+    )
+
+
+async def _repl(config: AgentConfig, settings: Settings) -> None:
     state = LoopState()
-    state.messages.append({"role": "system", "content": build_system_prompt()})
+    state.messages.append({"role": "system", "content": build_system_prompt(config.cwd)})
 
     session: PromptSession = PromptSession()
+    prompter = make_cli_prompter(session)
 
     console.print(
         f"[bold cyan]nano-claude-code[/bold cyan] [dim]({config.model}, "
@@ -66,24 +117,21 @@ async def _repl(config: AgentConfig) -> None:
         state.messages.append({"role": "user", "content": user_input})
         state.cancel_event.clear()
 
-        first = True
-
-        def on_text(delta: str) -> None:
-            nonlocal first
-            if first:
-                console.print("[bold green]assistant[/bold green]")
-                first = False
-            console.print(delta, end="", markup=False, highlight=False)
-
         try:
-            result = await query_loop(state, config, on_text=on_text)
+            result = await query_loop(
+                state,
+                config,
+                settings=settings,
+                prompter=prompter,
+                callbacks=_make_callbacks(),
+            )
         except Exception as exc:  # noqa: BLE001 - surface any provider error to the user
             console.print(f"\n[red]Error:[/red] {exc}")
             # Drop the unanswered user turn so the next request stays valid.
             state.messages.pop()
             continue
 
-        console.print()  # newline after streamed output
+        console.print()
         if result.reason is StopReason.MAX_TURNS:
             console.print("[yellow]Reached max turns.[/yellow]")
 
@@ -96,10 +144,11 @@ async def _repl(config: AgentConfig) -> None:
     type=click.Choice([m.value for m in PermissionMode]),
     default=PermissionMode.DEFAULT.value,
     show_default=True,
-    help="Permission mode (tools land in Phase 2).",
+    help="Permission mode: default | acceptEdits | bypassPermissions.",
 )
 def cli(model: str, max_turns: int, permission_mode: str) -> None:
     """nano-claude-code: a minimal Claude Code clone."""
+    settings = Settings.load()
     config = AgentConfig(
         model=model,
         max_turns=max_turns,
@@ -108,7 +157,7 @@ def cli(model: str, max_turns: int, permission_mode: str) -> None:
     config.context_window = _resolve_context_window(model, config.context_window)
 
     try:
-        asyncio.run(_repl(config))
+        asyncio.run(_repl(config, settings))
     except KeyboardInterrupt:
         pass
 
