@@ -70,6 +70,9 @@ class LoopState:
     messages: list[dict[str, Any]] = field(default_factory=list)
     turn_count: int = 0
     token_usage: TokenUsage = field(default_factory=TokenUsage)
+    # Input tokens of the most recent request, as reported by the API. Used as
+    # the current-context-size signal for compaction (Phase 4). 0 until known.
+    last_input_tokens: int = 0
     cancel_event: asyncio.Event = field(default_factory=asyncio.Event)
     consecutive_compact_failures: int = 0
     # Populated in Phase 3 (session storage); unused in Phase 1.
