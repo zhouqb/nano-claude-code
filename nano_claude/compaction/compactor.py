@@ -15,12 +15,32 @@ from nano_claude.session.restore import repair_messages
 # How many of the most recent (non-system) messages to keep verbatim.
 RECENT_MESSAGES_KEPT = 6
 
-SUMMARY_PROMPT = (
-    "Summarize the conversation so far. Preserve all tool outputs, decisions "
-    "made, files created or changed, important code, and any unresolved tasks or "
-    "next steps. This summary will REPLACE the earlier conversation history, so "
-    "be thorough and self-contained."
-)
+# Structured summary template (mirrors Claude Code's compact/prompt.ts). The
+# summary REPLACES the earlier history, so it must be thorough and
+# self-contained; the section structure is what keeps the model from dropping
+# load-bearing detail (user intent, file edits, errors, the in-flight task).
+SUMMARY_PROMPT = """\
+Your task is to create a detailed summary of the conversation so far. This \
+summary will REPLACE the earlier conversation history, so capture everything \
+needed to continue the work seamlessly — be thorough and self-contained.
+
+Structure your summary with these sections:
+
+1. Primary Request and Intent: What the user asked for, in their own framing, \
+including any explicit constraints or preferences.
+2. Key Technical Concepts: Technologies, frameworks, and design decisions in play.
+3. Files and Code Sections: Specific files examined, created, or modified. \
+Include important code snippets and why each file matters.
+4. Errors and Fixes: Errors encountered and how they were resolved, plus any \
+user feedback on them.
+5. Problem Solving: Problems solved and ongoing troubleshooting.
+6. All User Messages: List every non-tool-result user message verbatim — these \
+are critical for tracking intent and feedback.
+7. Pending Tasks: Anything explicitly requested that is not yet done.
+8. Current Work: Precisely what was being worked on immediately before this \
+summary, with file names and code where relevant.
+9. Next Step (optional): The next action, only if it directly continues the \
+most recent task. Quote the relevant request to avoid drift."""
 
 
 async def _summarize(state: LoopState, config: AgentConfig) -> str:

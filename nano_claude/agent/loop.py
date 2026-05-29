@@ -22,6 +22,8 @@ import litellm
 from pydantic import ValidationError
 
 from nano_claude.agent.types import AgentConfig, LoopResult, LoopState, StopReason
+from nano_claude.compaction.pipeline import run_context_management
+from nano_claude.compaction.token_counter import record_input_tokens
 from nano_claude.permissions.manager import (
     Prompter,
     PromptOutcome,
@@ -49,6 +51,9 @@ class LoopCallbacks:
     on_tool_start: Callable[[str, dict], None] | None = None
     on_tool_end: Callable[[str, ToolResult], None] | None = None
     on_tool_denied: Callable[[str, str], None] | None = None
+    on_compact: Callable[[], None] | None = None
+    on_compact_disabled: Callable[[], None] | None = None
+    on_context_warning: Callable[[], None] | None = None
 
 
 async def _deny_all_prompter(tool, args, prompt_text) -> PromptOutcome:
@@ -209,15 +214,25 @@ async def query_loop(
         if state.turn_count >= config.max_turns:
             return LoopResult(StopReason.MAX_TURNS, state.turn_count, "")
 
+        # Run the compaction pipeline and send its derived view to the model.
+        # state.messages stays canonical (storage + scrollback); the view is
+        # what the model sees this turn. Tool results / assistant turns below
+        # are recorded into state.messages, so next iteration re-derives a
+        # fresh view from the updated canonical store.
+        view = await run_context_management(state, config, callbacks)
+        if view.blocked:
+            notice = "Context is full. Run /compact to continue."
+            return LoopResult(StopReason.BLOCKED, state.turn_count, notice)
+
         text_parts: list[str] = []
         tool_calls: list[dict] = []
         last_chunk = None
         started = False
 
         response = await _call_with_retry(
-            lambda: litellm.acompletion(
+            lambda v=view: litellm.acompletion(
                 model=config.model,
-                messages=state.messages,
+                messages=v.messages,
                 tools=tool_schemas or None,
                 stream=True,
                 stream_options={"include_usage": True},
@@ -246,6 +261,9 @@ async def query_loop(
 
         if last_chunk is not None:
             state.token_usage.update_from_litellm(last_chunk)
+            # Record the API-reported input-token count — the current-context
+            # signal the pipeline's thresholds key off next turn.
+            record_input_tokens(state, last_chunk)
         state.turn_count += 1
 
         final_text = "".join(text_parts)

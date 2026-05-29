@@ -18,6 +18,7 @@ from rich.table import Table
 
 from nano_claude.agent.loop import LoopCallbacks, query_loop
 from nano_claude.agent.types import AgentConfig, LoopState, StopReason
+from nano_claude.compaction.compactor import compact_conversation
 from nano_claude.context import build_system_prompt
 from nano_claude.permissions.modes import PermissionMode
 from nano_claude.permissions.prompt import make_cli_prompter
@@ -80,12 +81,27 @@ def _make_callbacks() -> LoopCallbacks:
         _end_stream()
         console.print(f"[yellow]✗ {name} denied[/yellow] [dim]({reason})[/dim]")
 
+    def on_compact() -> None:
+        _end_stream()
+        console.print("[dim]⤢ Context auto-compacted.[/dim]")
+
+    def on_compact_disabled() -> None:
+        _end_stream()
+        console.print("[red]Auto-compact disabled after repeated failures.[/red]")
+
+    def on_context_warning() -> None:
+        _end_stream()
+        console.print("[yellow]Context nearing limit.[/yellow]")
+
     return LoopCallbacks(
         on_text=on_text,
         on_assistant_start=on_assistant_start,
         on_tool_start=on_tool_start,
         on_tool_end=on_tool_end,
         on_tool_denied=on_tool_denied,
+        on_compact=on_compact,
+        on_compact_disabled=on_compact_disabled,
+        on_context_warning=on_context_warning,
     )
 
 
@@ -146,6 +162,14 @@ async def _repl(config: AgentConfig, settings: Settings, state: LoopState) -> No
             if user_input in ("/quit", "/exit"):
                 console.print("[dim]Goodbye.[/dim]")
                 return
+            if user_input == "/compact":
+                ok = await compact_conversation(state, config)
+                await storage.flush()
+                if ok:
+                    console.print("[dim]⤢ Conversation compacted.[/dim]")
+                else:
+                    console.print("[red]Compaction failed.[/red]")
+                continue
 
             user_msg = {"role": "user", "content": user_input}
             state.messages.append(user_msg)
@@ -169,6 +193,8 @@ async def _repl(config: AgentConfig, settings: Settings, state: LoopState) -> No
             console.print()
             if result.reason is StopReason.MAX_TURNS:
                 console.print("[yellow]Reached max turns.[/yellow]")
+            elif result.reason is StopReason.BLOCKED:
+                console.print(f"[yellow]{result.final_text}[/yellow]")
     finally:
         await storage.flush()
         console.print("[dim]Session saved. Resume with `nano-claude --resume`.[/dim]")
