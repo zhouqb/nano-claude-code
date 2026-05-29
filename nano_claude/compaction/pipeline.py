@@ -34,6 +34,7 @@ from nano_claude.compaction.auto_compact import (
     should_warn,
 )
 from nano_claude.compaction.compactor import compact_conversation
+from nano_claude.compaction.microcompact import microcompact
 from nano_claude.compaction.snip import snip_messages
 from nano_claude.compaction.tool_result_budget import (
     ContentReplacementState,
@@ -78,7 +79,8 @@ async def run_context_management(
     view = snipped.messages
     if snipped.removed and callbacks.on_snip:
         callbacks.on_snip(snipped.removed)
-    # Layers 3-4 (microcompact / collapse) slot in here in later PRs.
+    view = microcompact(view)  # Layer 3
+    # Layer 4 (collapse) slots in here in a later PR.
 
     # --- Layer 5: Auto-Compact -------------------------------------------
     # Last resort: summarize the whole conversation and replace it. When it
