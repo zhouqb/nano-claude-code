@@ -12,10 +12,22 @@ from nano_claude.tools.base import PermissionDecision, Tool, ToolContext, ToolRe
 
 class EditInput(BaseModel):
     file_path: str = Field(description="Absolute path to the file to edit.")
-    old_string: str = Field(description="Exact text to replace.")
+    old_string: str = Field(
+        description=(
+            "Exact text to replace. To INSERT text, anchor on existing nearby "
+            "text: set old_string to that anchor and new_string to the anchor "
+            "plus your inserted text. To create a whole new file, use Write."
+        )
+    )
     new_string: str = Field(description="Replacement text.")
     replace_all: bool = Field(
-        default=False, description="Replace every occurrence instead of requiring uniqueness."
+        default=False,
+        description=(
+            "Default false: old_string must match exactly once, otherwise the "
+            "edit errors — this guards against unintentionally changing the wrong "
+            "occurrence. Set true to deliberately replace every occurrence "
+            "(e.g. renaming a symbol)."
+        ),
     )
 
 
@@ -23,7 +35,9 @@ class EditTool(Tool):
     name = "Edit"
     description = (
         "Replace an exact string in a file. By default the old_string must appear "
-        "exactly once; set replace_all to replace every occurrence."
+        "exactly once; set replace_all to replace every occurrence. This tool "
+        "replaces text — to insert, anchor on surrounding text; to create a file, "
+        "use Write."
     )
     input_schema = EditInput
 
@@ -40,6 +54,14 @@ class EditTool(Tool):
         path = self._resolve(args.file_path, context)
         if not path.is_file():
             return ToolResult.fail(f"File not found: {path}")
+        if args.old_string == "":
+            # An empty old_string matches between every character, so it can't
+            # target an insertion point. Reject it with actionable guidance
+            # rather than failing later with a confusing "not unique" error.
+            return ToolResult.fail(
+                "old_string is empty. To insert text, anchor on existing nearby "
+                "text; to create a new file, use Write."
+            )
         if args.old_string == args.new_string:
             return ToolResult.fail("old_string and new_string are identical; nothing to do.")
 

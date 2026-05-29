@@ -72,5 +72,8 @@ class GrepTool(Tool):
         if not out.strip():
             return ToolResult(output="No matches found.")
         if len(out) > MAX_OUTPUT_BYTES:
+            # TODO: search results are especially prone to truncation — spill the
+            # full match list to a temp file and reference its path here so no
+            # matches are lost. (Shared helper with Bash/Glob; see those TODOs.)
             out = out[:MAX_OUTPUT_BYTES] + "\n... (output truncated)"
         return ToolResult(output=out.rstrip("\n"))

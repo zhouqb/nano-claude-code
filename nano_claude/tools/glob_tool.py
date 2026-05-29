@@ -44,5 +44,8 @@ class GlobTool(Tool):
         shown = matches[:MAX_RESULTS]
         out = "\n".join(str(p) for p in shown)
         if len(matches) > MAX_RESULTS:
+            # TODO: spill the full match list to a temp file and reference its
+            # path here so truncated results aren't lost. (Shared helper with
+            # Bash/Grep; see those TODOs.)
             out += f"\n... ({len(matches) - MAX_RESULTS} more matches truncated)"
         return ToolResult(output=out)

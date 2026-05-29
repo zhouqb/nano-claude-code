@@ -115,6 +115,17 @@ async def test_edit_replace_all(tmp_path):
     assert f.read_text() == "y y y"
 
 
+async def test_edit_empty_old_string_errors(tmp_path):
+    f = tmp_path / "a.txt"
+    f.write_text("hello")
+    result = await EditTool().call(
+        EditInput(file_path=str(f), old_string="", new_string="x"), ctx(tmp_path)
+    )
+    assert result.is_error
+    assert "empty" in result.output
+    assert f.read_text() == "hello"  # unchanged
+
+
 async def test_edit_missing_string_errors(tmp_path):
     f = tmp_path / "a.txt"
     f.write_text("hello")

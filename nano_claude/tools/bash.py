@@ -51,6 +51,10 @@ class BashTool(Tool):
         return PermissionDecision(behavior="ask", prompt=f"Run: {args.command}")
 
     async def call(self, args: BashInput, context: ToolContext) -> ToolResult:
+        # Defense in depth: check_permissions already denies dangerous commands
+        # (and a deny can't be overridden by any permission mode), so the manager
+        # never reaches here for one. This guard is a hard safety floor for any
+        # caller that might invoke call() without going through the manager.
         if is_dangerous(args.command):
             return ToolResult.fail("Refused: command matches a blocked destructive pattern.")
 
@@ -73,6 +77,10 @@ class BashTool(Tool):
 
         out = stdout.decode(errors="replace")
         if len(out) > MAX_OUTPUT_BYTES:
+            # TODO: spill the full output to a temp file (e.g. under the session
+            # dir) and reference its path in the truncated result, so large
+            # outputs aren't lost permanently. Factor this into a shared helper
+            # reused by Grep/Glob (see their matching TODOs).
             out = out[:MAX_OUTPUT_BYTES] + "\n... (output truncated)"
 
         if proc.returncode != 0:
