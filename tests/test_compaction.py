@@ -14,6 +14,7 @@ from nano_claude.compaction.auto_compact import (
 from nano_claude.compaction.compactor import (
     RECENT_MESSAGES_KEPT,
     SUMMARY_PROMPT,
+    build_compact_user_message,
     compact_conversation,
     format_compact_summary,
 )
@@ -221,3 +222,28 @@ def test_format_strips_analysis_and_unwraps_summary():
 def test_format_passes_through_plain_text():
     # Output without the XML wrappers is returned trimmed, unchanged.
     assert format_compact_summary("  just a plain summary  ") == "just a plain summary"
+
+
+def test_compact_user_message_matches_claude_code_wrapper():
+    msg = build_compact_user_message(
+        "Summary:\n1. Intent: X",
+        transcript_path="/tmp/sid.jsonl",
+        recent_messages_preserved=True,
+        suppress_follow_up=True,
+    )
+    assert msg.startswith(
+        "This session is being continued from a previous conversation that ran out of context."
+    )
+    assert "Summary:\n1. Intent: X" in msg
+    assert "read the full transcript at: /tmp/sid.jsonl" in msg
+    assert "Recent messages are preserved verbatim." in msg
+    assert "Continue the conversation from where it left off" in msg
+
+
+def test_compact_user_message_minimal():
+    # No transcript / no recent / no suppress → just the base wrapper + summary.
+    msg = build_compact_user_message("S")
+    assert msg == (
+        "This session is being continued from a previous conversation that ran out of "
+        "context. The summary below covers the earlier portion of the conversation.\n\nS"
+    )

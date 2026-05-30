@@ -160,6 +160,43 @@ def format_compact_summary(summary: str) -> str:
     return formatted.strip()
 
 
+def build_compact_user_message(
+    summary: str,
+    *,
+    transcript_path: str | None = None,
+    recent_messages_preserved: bool = False,
+    suppress_follow_up: bool = False,
+) -> str:
+    """Wrap a formatted summary into the continuation message (verbatim from CC's
+    ``getCompactUserSummaryMessage`` in compact/prompt.ts; proactive-mode branch
+    omitted)."""
+    base = (
+        "This session is being continued from a previous conversation that ran out of "
+        "context. The summary below covers the earlier portion of the conversation.\n\n"
+        f"{summary}"
+    )
+
+    if transcript_path:
+        base += (
+            "\n\nIf you need specific details from before compaction (like exact code "
+            "snippets, error messages, or content you generated), read the full transcript "
+            f"at: {transcript_path}"
+        )
+
+    if recent_messages_preserved:
+        base += "\n\nRecent messages are preserved verbatim."
+
+    if suppress_follow_up:
+        base += (
+            "\nContinue the conversation from where it left off without asking the user any "
+            "further questions. Resume directly — do not acknowledge the summary, do not "
+            'recap what was happening, do not preface with "I\'ll continue" or similar. Pick '
+            "up the last task as if the break never happened."
+        )
+
+    return base
+
+
 async def _summarize(state: LoopState, config: AgentConfig) -> str:
     """Ask the model to summarize the conversation (streamed, then joined)."""
     messages = [*state.messages, {"role": "user", "content": SUMMARY_PROMPT}]
@@ -177,7 +214,7 @@ async def _summarize(state: LoopState, config: AgentConfig) -> str:
         content = getattr(choices[0].delta, "content", None)
         if content:
             parts.append(content)
-    return format_compact_summary("".join(parts))
+    return "".join(parts)
 
 
 def _safe_recent_tail(messages: list[dict]) -> list[dict]:
@@ -195,11 +232,12 @@ async def compact_conversation(state: LoopState, config: AgentConfig) -> bool:
     """Compact ``state.messages`` in place. Returns True on success."""
     pre_turn_count = state.turn_count
     try:
-        summary = await _summarize(state, config)
+        raw = await _summarize(state, config)
     except Exception:  # noqa: BLE001 - any failure feeds the circuit breaker
         state.consecutive_compact_failures += 1
         return False
 
+    summary = format_compact_summary(raw)
     if not summary:
         state.consecutive_compact_failures += 1
         return False
@@ -207,12 +245,18 @@ async def compact_conversation(state: LoopState, config: AgentConfig) -> bool:
     system = next((m for m in state.messages if m.get("role") == "system"), None)
     tail = _safe_recent_tail(state.messages)
 
+    transcript_path = str(state.storage.path) if state.storage is not None else None
+    content = build_compact_user_message(
+        summary,
+        transcript_path=transcript_path,
+        recent_messages_preserved=bool(tail),
+        suppress_follow_up=True,
+    )
+
     new_messages: list[dict] = []
     if system is not None:
         new_messages.append(system)
-    new_messages.append(
-        {"role": "user", "content": f"[Summary of earlier conversation]\n\n{summary}"}
-    )
+    new_messages.append({"role": "user", "content": content})
     new_messages.extend(tail)
 
     state.messages = new_messages
