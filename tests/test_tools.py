@@ -25,6 +25,11 @@ def ctx(cwd: str) -> ToolContext:
     )
 
 
+async def read_first(file_path: Path, context: ToolContext) -> None:
+    result = await ReadTool().call(ReadInput(file_path=str(file_path)), context)
+    assert not result.is_error
+
+
 # --- registry ---------------------------------------------------------------
 
 
@@ -91,8 +96,10 @@ async def test_write_permission_is_ask(tmp_path):
 async def test_edit_replaces_unique_string(tmp_path):
     f = tmp_path / "a.txt"
     f.write_text("foo bar baz")
+    context = ctx(tmp_path)
+    await read_first(f, context)
     result = await EditTool().call(
-        EditInput(file_path=str(f), old_string="bar", new_string="qux"), ctx(tmp_path)
+        EditInput(file_path=str(f), old_string="bar", new_string="qux"), context
     )
     assert not result.is_error
     assert f.read_text() == "foo qux baz"
@@ -101,8 +108,10 @@ async def test_edit_replaces_unique_string(tmp_path):
 async def test_edit_non_unique_without_replace_all_errors(tmp_path):
     f = tmp_path / "a.txt"
     f.write_text("x x x")
+    context = ctx(tmp_path)
+    await read_first(f, context)
     result = await EditTool().call(
-        EditInput(file_path=str(f), old_string="x", new_string="y"), ctx(tmp_path)
+        EditInput(file_path=str(f), old_string="x", new_string="y"), context
     )
     assert result.is_error
     assert "not unique" in result.output
@@ -111,9 +120,11 @@ async def test_edit_non_unique_without_replace_all_errors(tmp_path):
 async def test_edit_replace_all(tmp_path):
     f = tmp_path / "a.txt"
     f.write_text("x x x")
+    context = ctx(tmp_path)
+    await read_first(f, context)
     result = await EditTool().call(
         EditInput(file_path=str(f), old_string="x", new_string="y", replace_all=True),
-        ctx(tmp_path),
+        context,
     )
     assert not result.is_error
     assert f.read_text() == "y y y"
@@ -133,10 +144,54 @@ async def test_edit_empty_old_string_errors(tmp_path):
 async def test_edit_missing_string_errors(tmp_path):
     f = tmp_path / "a.txt"
     f.write_text("hello")
+    context = ctx(tmp_path)
+    await read_first(f, context)
     result = await EditTool().call(
-        EditInput(file_path=str(f), old_string="absent", new_string="z"), ctx(tmp_path)
+        EditInput(file_path=str(f), old_string="absent", new_string="z"), context
     )
     assert result.is_error
+
+
+async def test_edit_requires_prior_full_read(tmp_path):
+    f = tmp_path / "a.txt"
+    f.write_text("hello")
+    result = await EditTool().call(
+        EditInput(file_path=str(f), old_string="hello", new_string="hi"), ctx(tmp_path)
+    )
+    assert result.is_error
+    assert "Read it first" in result.output
+
+
+async def test_edit_rejects_file_modified_since_read(tmp_path):
+    f = tmp_path / "a.txt"
+    f.write_text("hello")
+    context = ctx(tmp_path)
+    await read_first(f, context)
+    f.write_text("hello user edit")
+    result = await EditTool().call(
+        EditInput(file_path=str(f), old_string="hello", new_string="hi"), context
+    )
+    assert result.is_error
+    assert "modified since read" in result.output
+
+
+async def test_write_existing_requires_prior_full_read(tmp_path):
+    f = tmp_path / "a.txt"
+    f.write_text("old")
+    result = await WriteTool().call(WriteInput(file_path=str(f), content="new"), ctx(tmp_path))
+    assert result.is_error
+    assert "Read it first" in result.output
+    assert f.read_text() == "old"
+
+
+async def test_write_existing_succeeds_after_read(tmp_path):
+    f = tmp_path / "a.txt"
+    f.write_text("old")
+    context = ctx(tmp_path)
+    await read_first(f, context)
+    result = await WriteTool().call(WriteInput(file_path=str(f), content="new"), context)
+    assert not result.is_error
+    assert f.read_text() == "new"
 
 
 # --- Glob -------------------------------------------------------------------

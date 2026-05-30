@@ -7,7 +7,13 @@ from pathlib import Path
 import aiofiles
 from pydantic import BaseModel, Field
 
-from nano_claude.tools.base import PermissionDecision, Tool, ToolContext, ToolResult
+from nano_claude.tools.base import (
+    FileReadSnapshot,
+    PermissionDecision,
+    Tool,
+    ToolContext,
+    ToolResult,
+)
 
 DEFAULT_LIMIT = 2000
 
@@ -48,11 +54,27 @@ class ReadTool(Tool):
         lines = content.splitlines()
         start = max(args.offset, 0)
         selected = lines[start : start + args.limit]
+        truncated = len(lines) > start + args.limit
+        if start == 0 and not truncated:
+            context.read_file_state[str(path)] = FileReadSnapshot(
+                content=content,
+                timestamp=path.stat().st_mtime,
+                offset=None,
+                limit=None,
+                is_partial_view=False,
+            )
+        else:
+            context.read_file_state[str(path)] = FileReadSnapshot(
+                content="\n".join(selected),
+                timestamp=path.stat().st_mtime,
+                offset=start,
+                limit=args.limit,
+                is_partial_view=True,
+            )
         if not selected:
             return ToolResult(output="(file is empty or offset past end of file)")
 
         numbered = "\n".join(f"{i:>6}\t{line}" for i, line in enumerate(selected, start=start + 1))
-        truncated = len(lines) > start + args.limit
         if truncated:
             numbered += f"\n... ({len(lines) - start - args.limit} more lines truncated)"
         return ToolResult(output=numbered)

@@ -91,6 +91,9 @@ class LoopState:
     # Wall-clock time (epoch seconds) of the last assistant message — the Layer 3
     # microcompact time gate. Set in the loop; seeded from the transcript on resume.
     last_assistant_at: float | None = None
+    # Per-session file snapshots populated by Read and consumed by Edit/Write
+    # stale-write guards.
+    read_file_state: Any = field(default_factory=dict)
 
 
 @dataclass
