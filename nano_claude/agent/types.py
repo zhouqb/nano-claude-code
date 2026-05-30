@@ -21,6 +21,7 @@ class StopReason(StrEnum):
     MAX_TURNS = "max_turns"
     ABORTED = "aborted"
     ERROR = "error"
+    BLOCKED = "blocked"  # context full and auto-compact can't help; needs manual /compact
 
 
 @dataclass
