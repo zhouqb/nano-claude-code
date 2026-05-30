@@ -62,6 +62,8 @@ class AgentConfig:
     max_turns: int = 50
     permission_mode: PermissionMode = PermissionMode.DEFAULT
     auto_compact: bool = True
+    # Layer 1 spill excerpt shape: "prefix" (head only) | "head_tail" (head + tail).
+    tool_result_preview_format: str = "prefix"
     context_window: int = 200_000  # overridden at startup from litellm.get_model_info()
     cwd: str = field(default_factory=os.getcwd)  # working directory for tool execution
 
@@ -78,6 +80,8 @@ class LoopState:
     consecutive_compact_failures: int = 0
     # Populated in Phase 3 (session storage); unused in Phase 1.
     storage: Any | None = None
+    # Layer 1 (budget) frozen-decision state; provisioned by the pipeline.
+    budget: Any | None = None
 
 
 @dataclass

@@ -41,8 +41,10 @@ async def test_passthrough_returns_canonical_view():
 
     view = await run_context_management(state, config, cbs)
 
-    # The view IS the canonical store in the foundation (no view-only layers yet).
-    assert view.messages is state.messages
+    # The view is a derived copy with identical content (layers must not mutate
+    # the canonical store), and nothing fired below threshold.
+    assert view.messages == state.messages
+    assert view.messages is not state.messages
     assert view.blocked is False
     assert fired == {"compact": False, "disabled": False, "warn": False}
 
@@ -88,7 +90,8 @@ async def test_auto_compact_fires_and_replaces_history(monkeypatch):
     # History was replaced; the summary is present and the signal was reset.
     assert any("STRUCTURED SUMMARY" in str(m.get("content")) for m in state.messages)
     assert state.last_input_tokens == 0
-    assert view.messages is state.messages
+    # View reflects the freshly-compacted canonical store.
+    assert view.messages == state.messages
 
 
 # --- circuit breaker --------------------------------------------------------
