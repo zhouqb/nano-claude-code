@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from nano_claude.session.restore import (
     INTERRUPTED,
+    last_assistant_ts,
     list_sessions,
     load_records,
     load_session,
@@ -13,8 +14,26 @@ from nano_claude.session.restore import (
 from nano_claude.session.storage import MessageRecord, SessionStorage, session_file
 
 
-def _msg(uuid: str, message: dict) -> MessageRecord:
-    return MessageRecord(uuid=uuid, ts=1.0, message=message)
+def _msg(uuid: str, message: dict, ts: float = 1.0) -> MessageRecord:
+    return MessageRecord(uuid=uuid, ts=ts, message=message)
+
+
+# --- last_assistant_ts (microcompact time-gate seed on resume) --------------
+
+
+def test_last_assistant_ts_returns_most_recent():
+    records = [
+        _msg("a", {"role": "user", "content": "hi"}, ts=10.0),
+        _msg("b", {"role": "assistant", "content": "first"}, ts=20.0),
+        _msg("c", {"role": "user", "content": "more"}, ts=30.0),
+        _msg("d", {"role": "assistant", "content": "second"}, ts=40.0),
+    ]
+    assert last_assistant_ts(records) == 40.0
+
+
+def test_last_assistant_ts_none_without_assistant():
+    records = [_msg("a", {"role": "user", "content": "hi"}, ts=10.0)]
+    assert last_assistant_ts(records) is None
 
 
 # --- restore_messages -------------------------------------------------------

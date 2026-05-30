@@ -23,7 +23,13 @@ from nano_claude.context import build_system_prompt
 from nano_claude.permissions.modes import PermissionMode
 from nano_claude.permissions.prompt import make_cli_prompter
 from nano_claude.permissions.settings import Settings
-from nano_claude.session.restore import list_sessions, load_session
+from nano_claude.session.restore import (
+    last_assistant_ts,
+    list_sessions,
+    load_records,
+    repair_messages,
+    restore_messages,
+)
 from nano_claude.session.storage import SessionStorage, new_session_id, session_file
 from nano_claude.tools.base import ToolResult
 
@@ -212,7 +218,10 @@ def _init_state(config: AgentConfig, resume: bool) -> LoopState:
     chosen = _pick_session(config.cwd) if resume else None
     if chosen is not None:
         storage = SessionStorage(chosen.path, chosen.session_id)
-        state.messages = load_session(chosen.path)
+        records = load_records(chosen.path)
+        state.messages = repair_messages(restore_messages(records))
+        # Seed the microcompact time gate so it measures the gap across the resume.
+        state.last_assistant_at = last_assistant_ts(records)
         state.storage = storage
         console.print(
             f"[dim]Resumed {len(state.messages)} message(s) from {chosen.session_id}.[/dim]"
