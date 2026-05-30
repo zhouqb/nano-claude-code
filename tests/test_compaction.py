@@ -11,7 +11,12 @@ from nano_claude.compaction.auto_compact import (
     should_block,
     should_warn,
 )
-from nano_claude.compaction.compactor import RECENT_MESSAGES_KEPT, compact_conversation
+from nano_claude.compaction.compactor import (
+    RECENT_MESSAGES_KEPT,
+    SUMMARY_PROMPT,
+    compact_conversation,
+    format_compact_summary,
+)
 from nano_claude.compaction.thresholds import (
     MAX_CONSECUTIVE_COMPACT_FAILURES,
     auto_compact_threshold,
@@ -188,3 +193,31 @@ async def test_compact_tail_drops_orphan_tool_message(monkeypatch):
     assert ok
     # No leading orphan tool message after the summary.
     assert state.messages[2]["role"] != "tool"
+
+
+# --- prompt + summary formatting (verbatim from Claude Code) ----------------
+
+
+def test_summary_prompt_is_claude_code_verbatim():
+    # Spot-check the load-bearing fragments of getCompactPrompt().
+    assert SUMMARY_PROMPT.startswith("CRITICAL: Respond with TEXT ONLY. Do NOT call any tools.")
+    assert "1. Primary Request and Intent:" in SUMMARY_PROMPT
+    assert "6. All user messages:" in SUMMARY_PROMPT
+    assert "9. Optional Next Step:" in SUMMARY_PROMPT
+    assert "<analysis>" in SUMMARY_PROMPT and "<summary>" in SUMMARY_PROMPT
+    assert SUMMARY_PROMPT.rstrip().endswith(
+        "Tool calls will be rejected and you will fail the task."
+    )
+
+
+def test_format_strips_analysis_and_unwraps_summary():
+    raw = "<analysis>\nscratchpad thoughts\n</analysis>\n<summary>\n1. Intent: do X\n</summary>"
+    out = format_compact_summary(raw)
+    assert "scratchpad thoughts" not in out
+    assert out.startswith("Summary:")
+    assert "1. Intent: do X" in out
+
+
+def test_format_passes_through_plain_text():
+    # Output without the XML wrappers is returned trimmed, unchanged.
+    assert format_compact_summary("  just a plain summary  ") == "just a plain summary"
