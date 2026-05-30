@@ -17,7 +17,7 @@ from rich.console import Console
 from rich.table import Table
 
 from nano_claude.agent.loop import LoopCallbacks, query_loop
-from nano_claude.agent.types import AgentConfig, LoopState, StopReason
+from nano_claude.agent.types import AgentConfig, LoopState, StopReason, TokenUsage
 from nano_claude.compaction.compactor import compact_conversation
 from nano_claude.context import build_system_prompt
 from nano_claude.permissions.modes import PermissionMode
@@ -209,6 +209,14 @@ async def _repl(config: AgentConfig, settings: Settings, state: LoopState) -> No
                 else:
                     console.print("[red]Compaction failed.[/red]")
                 continue
+            if user_input in ("/clear", "/reset", "/new"):
+                await storage.flush()
+                storage = _reset_state_for_clear(state, config)
+                await storage.flush()
+                console.print(
+                    f"[dim]Conversation cleared. New session: {storage.session_id}[/dim]"
+                )
+                continue
             if user_input == "/init":
                 console.print("[dim]Analyzing codebase to initialize CLAUDE.md...[/dim]")
                 user_input = INIT_PROMPT
@@ -268,6 +276,28 @@ def _init_state(config: AgentConfig, resume: bool) -> LoopState:
     storage.append_message(system_msg)
     state.storage = storage
     return state
+
+
+def _reset_state_for_clear(state: LoopState, config: AgentConfig) -> SessionStorage:
+    """Start a fresh session after /clear while keeping the current config."""
+    session_id = new_session_id()
+    storage = SessionStorage(session_file(config.cwd, session_id), session_id)
+    storage.append_metadata(model=config.model, cwd=config.cwd)
+    system_msg = {"role": "system", "content": build_system_prompt(config.cwd)}
+
+    state.messages = [system_msg]
+    state.turn_count = 0
+    state.token_usage = TokenUsage()
+    state.last_input_tokens = 0
+    state.cancel_event.clear()
+    state.consecutive_compact_failures = 0
+    state.storage = storage
+    state.budget = None
+    state.collapse = None
+    state.last_assistant_at = None
+    state.read_file_state = {}
+    storage.append_message(system_msg)
+    return storage
 
 
 @click.command()
