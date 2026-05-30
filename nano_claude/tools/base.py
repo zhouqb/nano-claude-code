@@ -11,13 +11,22 @@ from __future__ import annotations
 
 import asyncio
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel
 
 from nano_claude.permissions.modes import PermissionMode
+
+
+@dataclass
+class FileReadSnapshot:
+    content: str
+    timestamp: float
+    offset: int | None = None
+    limit: int | None = None
+    is_partial_view: bool = False
 
 
 @dataclass
@@ -28,6 +37,9 @@ class ToolContext:
     # Directory where tools spill truncated output. Set by the loop to the
     # session's outputs folder; None falls back to a temp dir (see overflow.py).
     output_dir: Path | None = None
+    # Claude Code requires a file to be read before an existing file is edited
+    # or overwritten, and rejects stale writes if the file changed since then.
+    read_file_state: dict[str, FileReadSnapshot] = field(default_factory=dict)
 
 
 @dataclass

@@ -191,6 +191,7 @@ async def query_loop(
         cancel_event=state.cancel_event,
         permission_mode=config.permission_mode,
         output_dir=session_output_dir(state.storage),
+        read_file_state=state.read_file_state,
     )
 
     def record(message: dict) -> None:

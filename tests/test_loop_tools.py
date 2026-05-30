@@ -37,8 +37,10 @@ async def test_edit_file_end_to_end(tmp_path, monkeypatch):
     target = tmp_path / "greeting.txt"
     target.write_text("hello world")
 
+    read_args = json.dumps({"file_path": str(target)})
     edit_args = json.dumps({"file_path": str(target), "old_string": "world", "new_string": "there"})
     streams = [
+        [tool_call_chunk(0, "call_0", "Read", read_args), usage_chunk(10, 5)],
         [tool_call_chunk(0, "call_1", "Edit", edit_args), usage_chunk(10, 5)],
         [text_chunk("Done."), usage_chunk(2, 1)],
     ]
@@ -54,10 +56,10 @@ async def test_edit_file_end_to_end(tmp_path, monkeypatch):
     assert target.read_text() == "hello there"
 
     # Invariant: the assistant tool_call is followed by a matching tool message.
-    assistant = next(m for m in state.messages if m.get("tool_calls"))
-    tool_msg = next(m for m in state.messages if m.get("role") == "tool")
-    assert tool_msg["tool_call_id"] == assistant["tool_calls"][0]["id"]
-    assert "Replaced 1 occurrence" in tool_msg["content"]
+    assistant_calls = [m for m in state.messages if m.get("tool_calls")]
+    tool_msgs = [m for m in state.messages if m.get("role") == "tool"]
+    assert tool_msgs[-1]["tool_call_id"] == assistant_calls[-1]["tool_calls"][0]["id"]
+    assert "Replaced 1 occurrence" in tool_msgs[-1]["content"]
 
 
 async def test_denied_tool_does_not_run(tmp_path, monkeypatch):

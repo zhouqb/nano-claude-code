@@ -7,7 +7,13 @@ from pathlib import Path
 import aiofiles
 from pydantic import BaseModel, Field
 
-from nano_claude.tools.base import PermissionDecision, Tool, ToolContext, ToolResult
+from nano_claude.tools.base import (
+    FileReadSnapshot,
+    PermissionDecision,
+    Tool,
+    ToolContext,
+    ToolResult,
+)
 
 
 class EditInput(BaseModel):
@@ -71,6 +77,10 @@ class EditTool(Tool):
         except OSError as exc:
             return ToolResult.fail(f"Could not read {path}: {exc}")
 
+        stale_error = self._stale_write_error(path, content, context)
+        if stale_error is not None:
+            return ToolResult.fail(stale_error)
+
         count = content.count(args.old_string)
         if count == 0:
             return ToolResult.fail("old_string not found in file.")
@@ -87,5 +97,24 @@ class EditTool(Tool):
         except OSError as exc:
             return ToolResult.fail(f"Could not write {path}: {exc}")
 
+        context.read_file_state[str(path)] = FileReadSnapshot(
+            content=updated,
+            timestamp=path.stat().st_mtime,
+            offset=None,
+            limit=None,
+            is_partial_view=False,
+        )
         replaced = count if args.replace_all else 1
         return ToolResult(output=f"Replaced {replaced} occurrence(s) in {path}")
+
+    @staticmethod
+    def _stale_write_error(path: Path, content: str, context: ToolContext) -> str | None:
+        snapshot = context.read_file_state.get(str(path))
+        if snapshot is None or snapshot.is_partial_view:
+            return "File has not been read yet. Read it first before editing it."
+        if content != snapshot.content:
+            return (
+                "File has been modified since read. Read it again before attempting "
+                "to edit it."
+            )
+        return None
