@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from nano_claude.session.restore import (
+    CONTINUE_PROMPT,
     INTERRUPTED,
     last_assistant_ts,
     list_sessions,
@@ -10,6 +11,7 @@ from nano_claude.session.restore import (
     load_session,
     repair_messages,
     restore_messages,
+    restore_read_file_state,
 )
 from nano_claude.session.storage import MessageRecord, SessionStorage, session_file
 
@@ -118,6 +120,16 @@ def test_repair_noop_for_plain_conversation():
     assert repair_messages(messages) == messages
 
 
+def test_repair_patches_last_user_interrupted_turn():
+    messages = [{"role": "user", "content": "do the thing"}]
+    repaired = repair_messages(messages)
+    assert repaired == [
+        {"role": "user", "content": "do the thing"},
+        {"role": "assistant", "content": INTERRUPTED},
+        {"role": "user", "content": CONTINUE_PROMPT},
+    ]
+
+
 # --- end-to-end: simulate a mid-turn crash ----------------------------------
 
 
@@ -172,3 +184,58 @@ def test_list_sessions_empty(tmp_path):
 
 def test_load_records_missing_file(tmp_path):
     assert load_records(tmp_path / "nope.jsonl") == []
+
+
+def test_restore_read_file_state_from_full_read(tmp_path):
+    target = tmp_path / "a.txt"
+    target.write_text("hello\n")
+    messages = [
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "Read",
+                        "arguments": f'{{"file_path": "{target}"}}',
+                    },
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "content": "     1\thello"},
+    ]
+
+    restored = restore_read_file_state(messages, str(tmp_path))
+
+    assert restored[str(target)].content == "hello\n"
+    assert not restored[str(target)].is_partial_view
+
+
+def test_restore_read_file_state_skips_truncated_reads(tmp_path):
+    target = tmp_path / "a.txt"
+    target.write_text("hello\n")
+    messages = [
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "Read",
+                        "arguments": f'{{"file_path": "{target}"}}',
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "content": "     1\thello\n... (10 more lines truncated)",
+        },
+    ]
+
+    assert restore_read_file_state(messages, str(tmp_path)) == {}

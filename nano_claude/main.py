@@ -29,6 +29,7 @@ from nano_claude.session.restore import (
     load_records,
     repair_messages,
     restore_messages,
+    restore_read_file_state,
 )
 from nano_claude.session.storage import SessionStorage, new_session_id, session_file
 from nano_claude.tools.base import ToolResult
@@ -225,6 +226,7 @@ def _init_state(config: AgentConfig, resume: bool) -> LoopState:
         storage = SessionStorage(chosen.path, chosen.session_id)
         records = load_records(chosen.path)
         state.messages = repair_messages(restore_messages(records))
+        state.read_file_state = restore_read_file_state(state.messages, config.cwd)
         # Seed the microcompact time gate so it measures the gap across the resume.
         state.last_assistant_at = last_assistant_ts(records)
         state.storage = storage

@@ -7,6 +7,7 @@ after a crash or interruption. ``list_sessions`` powers the ``--resume`` picker.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -19,8 +20,10 @@ from nano_claude.session.storage import (
     parse_record,
     project_dir,
 )
+from nano_claude.tools.base import FileReadSnapshot
 
 INTERRUPTED = "[Interrupted]"
+CONTINUE_PROMPT = "Continue from where you left off."
 
 
 def load_records(path: Path) -> list[SessionRecord]:
@@ -83,12 +86,78 @@ def repair_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
                         {"role": "tool", "tool_call_id": tc["id"], "content": INTERRUPTED}
                     )
                     resolved_ids.add(tc["id"])
+    last = next(
+        (
+            m
+            for m in reversed(repaired)
+            if m.get("role") in ("user", "assistant") and m.get("content") != INTERRUPTED
+        ),
+        None,
+    )
+    if last and last.get("role") == "user":
+        repaired.append({"role": "assistant", "content": INTERRUPTED})
+        repaired.append({"role": "user", "content": CONTINUE_PROMPT})
     return repaired
 
 
 def load_session(path: Path) -> list[dict[str, Any]]:
     """Convenience: load a session file into a repaired, resumable messages list."""
     return repair_messages(restore_messages(load_records(path)))
+
+
+def restore_read_file_state(
+    messages: list[dict[str, Any]], cwd: str
+) -> dict[str, FileReadSnapshot]:
+    """Rebuild file-read snapshots from prior full Read tool calls.
+
+    Claude Code persists file-history snapshots. Nano's transcript only stores
+    messages, so this restores the useful part best-effort by re-reading files
+    that the transcript shows were read fully. If the file no longer exists, or
+    the transcript shows a partial/truncated read, no snapshot is restored.
+    """
+    tool_results = {
+        m.get("tool_call_id"): m.get("content", "")
+        for m in messages
+        if m.get("role") == "tool" and m.get("tool_call_id")
+    }
+    restored: dict[str, FileReadSnapshot] = {}
+    for message in messages:
+        if message.get("role") != "assistant":
+            continue
+        for tool_call in message.get("tool_calls") or []:
+            function = tool_call.get("function") or {}
+            if function.get("name") != "Read":
+                continue
+            tool_call_id = tool_call.get("id")
+            result_content = str(tool_results.get(tool_call_id, ""))
+            if result_content == INTERRUPTED or "more lines truncated" in result_content:
+                continue
+            try:
+                args = json.loads(function.get("arguments") or "{}")
+            except json.JSONDecodeError:
+                continue
+            if args.get("offset", 0) not in (0, None):
+                continue
+            file_path = args.get("file_path")
+            if not isinstance(file_path, str) or not file_path:
+                continue
+            path = Path(file_path)
+            if not path.is_absolute():
+                path = Path(cwd) / path
+            if not path.is_file():
+                continue
+            try:
+                content = path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            restored[str(path)] = FileReadSnapshot(
+                content=content,
+                timestamp=path.stat().st_mtime,
+                offset=None,
+                limit=None,
+                is_partial_view=False,
+            )
+    return restored
 
 
 @dataclass

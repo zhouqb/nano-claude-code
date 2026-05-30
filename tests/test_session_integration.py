@@ -11,7 +11,7 @@ from nano_claude.agent.types import AgentConfig, LoopState, StopReason
 from nano_claude.permissions.manager import PromptOutcome
 from nano_claude.permissions.modes import PermissionMode
 from nano_claude.permissions.settings import Settings
-from nano_claude.session.restore import load_session
+from nano_claude.session.restore import load_session, restore_read_file_state
 from nano_claude.session.storage import SessionStorage, session_file
 from tests.conftest import (
     make_sequential_acompletion,
@@ -33,8 +33,10 @@ def _new_storage(tmp_path) -> SessionStorage:
 async def test_loop_persists_full_turn(tmp_path, monkeypatch):
     target = tmp_path / "f.txt"
     target.write_text("hello world")
+    read_args = json.dumps({"file_path": str(target)})
     edit_args = json.dumps({"file_path": str(target), "old_string": "world", "new_string": "there"})
     streams = [
+        [tool_call_chunk(0, "call_0", "Read", read_args), usage_chunk(10, 5)],
         [tool_call_chunk(0, "call_1", "Edit", edit_args), usage_chunk(10, 5)],
         [text_chunk("Done."), usage_chunk(2, 1)],
     ]
@@ -60,7 +62,7 @@ async def test_loop_persists_full_turn(tmp_path, monkeypatch):
     restored = load_session(storage.path)
     assert restored == state.messages
     roles = [m["role"] for m in restored]
-    assert roles == ["user", "assistant", "tool", "assistant"]
+    assert roles == ["user", "assistant", "tool", "assistant", "tool", "assistant"]
 
 
 async def test_resume_appends_to_same_file(tmp_path, monkeypatch):
@@ -100,6 +102,52 @@ async def test_resume_appends_to_same_file(tmp_path, monkeypatch):
         "again",
         "second reply",
     ]
+
+
+async def test_resume_restores_read_state_for_existing_file_edit(tmp_path, monkeypatch):
+    target = tmp_path / "f.txt"
+    target.write_text("hello world")
+
+    read_args = json.dumps({"file_path": str(target)})
+    streams_first = [
+        [tool_call_chunk(0, "call_read", "Read", read_args), usage_chunk(10, 5)],
+        [text_chunk("read done"), usage_chunk(2, 1)],
+    ]
+    monkeypatch.setattr(litellm, "acompletion", make_sequential_acompletion(streams_first))
+
+    storage = _new_storage(tmp_path)
+    state = LoopState(storage=storage)
+    config = AgentConfig(cwd=str(tmp_path), permission_mode=PermissionMode.DEFAULT)
+    msg = {"role": "user", "content": "read f"}
+    state.messages.append(msg)
+    storage.append_message(msg)
+    await query_loop(state, config, settings=Settings(path=tmp_path / "s.json"), prompter=_allow)
+    await storage.flush()
+
+    edit_args = json.dumps({"file_path": str(target), "old_string": "world", "new_string": "there"})
+    streams_second = [
+        [tool_call_chunk(0, "call_edit", "Edit", edit_args), usage_chunk(10, 5)],
+        [text_chunk("edited"), usage_chunk(2, 1)],
+    ]
+    monkeypatch.setattr(litellm, "acompletion", make_sequential_acompletion(streams_second))
+
+    resumed_storage = SessionStorage(storage.path, "sid")
+    resumed_messages = load_session(storage.path)
+    resumed = LoopState(
+        messages=resumed_messages,
+        storage=resumed_storage,
+        read_file_state=restore_read_file_state(resumed_messages, str(tmp_path)),
+    )
+    msg2 = {"role": "user", "content": "edit it"}
+    resumed.messages.append(msg2)
+    resumed_storage.append_message(msg2)
+    result = await query_loop(
+        resumed, config, settings=Settings(path=tmp_path / "s.json"), prompter=_allow
+    )
+    await resumed_storage.flush()
+
+    assert result.reason is StopReason.COMPLETED
+    assert target.read_text() == "hello there"
 
 
 async def test_resume_repairs_dangling_tool_call(tmp_path):
