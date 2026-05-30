@@ -93,6 +93,10 @@ def _make_callbacks() -> LoopCallbacks:
         _end_stream()
         console.print("[yellow]Context nearing limit.[/yellow]")
 
+    def on_snip(removed: int) -> None:
+        _end_stream()
+        console.print(f"[dim]✂ Snipped {removed} stale message(s).[/dim]")
+
     return LoopCallbacks(
         on_text=on_text,
         on_assistant_start=on_assistant_start,
@@ -102,6 +106,7 @@ def _make_callbacks() -> LoopCallbacks:
         on_compact=on_compact,
         on_compact_disabled=on_compact_disabled,
         on_context_warning=on_context_warning,
+        on_snip=on_snip,
     )
 
 

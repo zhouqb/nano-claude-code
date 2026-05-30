@@ -54,6 +54,7 @@ class LoopCallbacks:
     on_compact: Callable[[], None] | None = None
     on_compact_disabled: Callable[[], None] | None = None
     on_context_warning: Callable[[], None] | None = None
+    on_snip: Callable[[int], None] | None = None
 
 
 async def _deny_all_prompter(tool, args, prompt_text) -> PromptOutcome:
