@@ -48,6 +48,19 @@ def restore_messages(records: list[SessionRecord]) -> list[dict[str, Any]]:
     return messages
 
 
+def last_assistant_ts(records: list[SessionRecord]) -> float | None:
+    """Wall-clock ``ts`` of the most recent assistant message, or None if none.
+
+    Seeds ``LoopState.last_assistant_at`` on resume so the Layer 3 microcompact
+    time gate measures the real idle gap across the resume (the in-memory message
+    dicts carry no timestamp; the records do).
+    """
+    for record in reversed(records):
+        if isinstance(record, MessageRecord) and record.message.get("role") == "assistant":
+            return record.ts
+    return None
+
+
 def repair_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Make a messages list API-valid after a crash or mid-turn interruption.
 

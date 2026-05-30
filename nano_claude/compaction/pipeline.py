@@ -24,6 +24,7 @@ slotting into the marked points below.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -79,7 +80,14 @@ async def run_context_management(
     view = snipped.messages
     if snipped.removed and callbacks.on_snip:
         callbacks.on_snip(snipped.removed)
-    view = microcompact(view)  # Layer 3
+    gap_minutes = (
+        (time.time() - state.last_assistant_at) / 60
+        if state.last_assistant_at is not None
+        else None
+    )
+    view = microcompact(  # Layer 3
+        view, gap_minutes=gap_minutes, gap_threshold_minutes=config.microcompact_gap_minutes
+    )
     # Layer 4 (collapse) slots in here in a later PR.
 
     # --- Layer 5: Auto-Compact -------------------------------------------

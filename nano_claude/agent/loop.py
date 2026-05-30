@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
@@ -194,6 +195,8 @@ async def query_loop(
     def record(message: dict) -> None:
         """Append a message to state and persist it (for crash recovery)."""
         state.messages.append(message)
+        if message.get("role") == "assistant":
+            state.last_assistant_at = time.time()  # Layer 3 microcompact time gate
         if state.storage is not None:
             state.storage.append_message(message)
 

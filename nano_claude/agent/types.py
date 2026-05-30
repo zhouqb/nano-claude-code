@@ -64,6 +64,9 @@ class AgentConfig:
     auto_compact: bool = True
     # Layer 1 spill excerpt shape: "prefix" (head only) | "head_tail" (head + tail).
     tool_result_preview_format: str = "prefix"
+    # Layer 3 (microcompact) time gate: clear old tool results only after this
+    # many minutes since the last assistant message (cache presumed cold).
+    microcompact_gap_minutes: int = 60
     context_window: int = 200_000  # overridden at startup from litellm.get_model_info()
     cwd: str = field(default_factory=os.getcwd)  # working directory for tool execution
 
@@ -82,6 +85,9 @@ class LoopState:
     storage: Any | None = None
     # Layer 1 (budget) frozen-decision state; provisioned by the pipeline.
     budget: Any | None = None
+    # Wall-clock time (epoch seconds) of the last assistant message — the Layer 3
+    # microcompact time gate. Set in the loop; seeded from the transcript on resume.
+    last_assistant_at: float | None = None
 
 
 @dataclass
