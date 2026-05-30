@@ -9,11 +9,12 @@ to splice each span down to its placeholder. That projection is what makes a
 collapse persist across turns without mutating the transcript.
 
 Mirrors Claude Code's ``contextCollapse`` (codename *marble-origami*), trimmed
-to one mechanism. When enabled, collapse starts committing at
-``collapse_commit_threshold`` (90% of the window) — below the auto-compact
-threshold — so it gets first crack at the headroom and **suppresses Layer 5**
-while it can still make progress. If it runs out of spans to collapse while
-still over the limit, it reports ``exhausted`` and auto-compact takes over.
+to one mechanism. When enabled, collapse engages at ``collapse_commit_threshold``
+(90% of the window) and commits spans until the *projected view* is back under
+that threshold, **suppressing Layer 5** only when it actually gets there. If it
+runs out of spans while still over, it reports ``exhausted`` and the pipeline
+falls through to auto-compact — so an oversized request never goes out with
+Layer 5 skipped.
 
 Off by default (``AgentConfig.context_collapse``). Deliberately *in-memory only*
 for now: commits live on ``LoopState`` for the session. Persisting the commit
@@ -31,7 +32,7 @@ from typing import TYPE_CHECKING
 import litellm
 
 from nano_claude.compaction.thresholds import collapse_commit_threshold
-from nano_claude.compaction.token_counter import current_context_tokens
+from nano_claude.compaction.token_counter import estimate_message_tokens
 
 if TYPE_CHECKING:
     from nano_claude.agent.types import AgentConfig, LoopState
@@ -189,34 +190,10 @@ async def _default_summarize(span_messages: list[dict], config: AgentConfig) -> 
     return "".join(parts).strip() or "(read/search activity)"
 
 
-async def apply_collapses_if_needed(
-    messages: list[dict],
-    state: LoopState,
-    config: AgentConfig,
-    *,
-    summarize: SpanSummarizer | None = None,
-) -> CollapseResult:
-    """Project existing commits and, if over threshold, commit one more span."""
-    if state.collapse is None:
-        state.collapse = CollapseState()
-    summarize = summarize or _default_summarize
-
-    view = project_view(messages, state.collapse)
-
-    if current_context_tokens(state) < collapse_commit_threshold(config.context_window):
-        return CollapseResult(view, committed=False, exhausted=False)
-
-    span = _find_span(view)
-    if span is None:
-        # Over threshold but nothing left to collapse — let Layer 5 take over.
-        return CollapseResult(view, committed=False, exhausted=True)
-
-    summary = await summarize(span.messages, config)
-    commit = CollapseCommit(uuid.uuid4().hex[:16], span.first_id, span.last_id, summary)
-    state.collapse.commits.append(commit)
-    # Forward-compatible persistence hook: writes the commit to the transcript
-    # once storage grows an append_collapse_boundary method. Until then collapse
-    # is in-memory only (commits don't survive --resume). See PR notes.
+def _persist(commit: CollapseCommit, state: LoopState) -> None:
+    """Forward-compatible persistence hook: writes the commit to the transcript
+    once storage grows an ``append_collapse_boundary`` method. Until then collapse
+    is in-memory only (commits don't survive ``--resume``). See PR notes."""
     if state.storage is not None and hasattr(state.storage, "append_collapse_boundary"):
         state.storage.append_collapse_boundary(
             collapse_id=commit.collapse_id,
@@ -224,4 +201,44 @@ async def apply_collapses_if_needed(
             last_id=commit.last_id,
             summary=commit.summary,
         )
-    return CollapseResult(project_view(messages, state.collapse), committed=True, exhausted=False)
+
+
+async def apply_collapses_if_needed(
+    messages: list[dict],
+    state: LoopState,
+    config: AgentConfig,
+    *,
+    summarize: SpanSummarizer | None = None,
+) -> CollapseResult:
+    """Project existing commits and collapse spans until the view fits.
+
+    Headroom is recomputed from the *projected view* after every commit (it
+    shrinks as spans collapse; ``last_input_tokens`` can't see this turn's
+    collapses). We keep committing until the view is back under the threshold or
+    no collapsible span remains. ``exhausted=True`` means we're still over the
+    threshold with nothing left to collapse — the pipeline then falls through to
+    Layer 5 so an oversized request never goes out with auto-compact skipped.
+    """
+    if state.collapse is None:
+        state.collapse = CollapseState()
+    summarize = summarize or _default_summarize
+
+    threshold = collapse_commit_threshold(config.context_window)
+    view = project_view(messages, state.collapse)
+    if estimate_message_tokens(view) < threshold:
+        return CollapseResult(view, committed=False, exhausted=False)
+
+    committed = False
+    while estimate_message_tokens(view) >= threshold:
+        span = _find_span(view)
+        if span is None:
+            # Still over, but nothing left to collapse — Layer 5 takes over.
+            return CollapseResult(view, committed=committed, exhausted=True)
+        summary = await summarize(span.messages, config)
+        commit = CollapseCommit(uuid.uuid4().hex[:16], span.first_id, span.last_id, summary)
+        state.collapse.commits.append(commit)
+        _persist(commit, state)
+        committed = True
+        view = project_view(messages, state.collapse)
+
+    return CollapseResult(view, committed=committed, exhausted=False)

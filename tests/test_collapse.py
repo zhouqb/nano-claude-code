@@ -23,12 +23,18 @@ def _read_turn(call_id: str, tool: str = "Read", result: str = "file contents") 
     ]
 
 
-def _read_heavy_conversation(n: int) -> list[dict]:
+def _read_heavy_conversation(n: int, result: str = "file contents") -> list[dict]:
     msgs: list[dict] = [{"role": "user", "content": "investigate the bug"}]
     for i in range(n):
-        msgs += _read_turn(f"r{i}")
+        msgs += _read_turn(f"r{i}", result=result)
     msgs.append({"role": "assistant", "content": "found it"})
     return msgs
+
+
+# Collapse measures the *projected view* via a chars/4 estimate. Use a small
+# window so the threshold (90% = 3600 tokens ≈ 14.4k chars) is reachable with
+# modest, readable fixtures rather than ~720k-char strings.
+SMALL_WINDOW = 4_000
 
 
 async def _summ(_span, _config) -> str:
@@ -71,34 +77,34 @@ def test_project_view_no_commits_is_identity():
 
 
 async def test_no_collapse_below_threshold():
-    config = AgentConfig(context_window=200_000)
-    state = LoopState(messages=[], last_input_tokens=100_000)  # below 90% (180k)
-    msgs = _read_heavy_conversation(4)
+    config = AgentConfig(context_window=SMALL_WINDOW)
+    state = LoopState(messages=[])
+    msgs = _read_heavy_conversation(4)  # small results → estimate well under threshold
     result = await apply_collapses_if_needed(msgs, state, config, summarize=_summ)
     assert result.committed is False
     assert result.exhausted is False
     assert result.messages is msgs
 
 
-async def test_collapses_span_over_threshold():
-    config = AgentConfig(context_window=200_000)
-    state = LoopState(messages=[], last_input_tokens=185_000)  # above 90%
-    msgs = _read_heavy_conversation(4)
+async def test_collapses_until_under_threshold():
+    config = AgentConfig(context_window=SMALL_WINDOW)
+    state = LoopState(messages=[])
+    # 4 read turns × 5k-char results ≈ 5k tokens > 3.6k threshold; collapsing the
+    # (single, contiguous) span drops the view well under threshold in one commit.
+    msgs = _read_heavy_conversation(4, result="x" * 5_000)
     result = await apply_collapses_if_needed(msgs, state, config, summarize=_summ)
 
     assert result.committed is True
+    assert result.exhausted is False
     assert len(state.collapse.commits) == 1
     assert any("looked at files" in (m.get("content") or "") for m in result.messages)
 
 
-async def test_exhausted_when_no_span_left():
-    config = AgentConfig(context_window=200_000)
-    state = LoopState(messages=[], last_input_tokens=185_000)
-    # No read/search span (just a plain exchange) → nothing to collapse.
-    msgs = [
-        {"role": "user", "content": "hi"},
-        {"role": "assistant", "content": "hello"},
-    ]
+async def test_exhausted_when_still_over_and_no_span_left():
+    config = AgentConfig(context_window=SMALL_WINDOW)
+    state = LoopState(messages=[])
+    # Over threshold (~15k chars ≈ 3.75k tokens) but no read/search span to collapse.
+    msgs = [{"role": "user", "content": "x" * 15_000}]
     result = await apply_collapses_if_needed(msgs, state, config, summarize=_summ)
     assert result.committed is False
     assert result.exhausted is True
