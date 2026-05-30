@@ -235,13 +235,23 @@ def _init_state(config: AgentConfig, resume: bool) -> LoopState:
     help="Permission mode: default | acceptEdits | bypassPermissions.",
 )
 @click.option("--resume", is_flag=True, help="Resume a previous session in this directory.")
-def cli(model: str, max_turns: int, permission_mode: str, resume: bool) -> None:
+@click.option(
+    "--tool-preview-format",
+    type=click.Choice(["prefix", "head_tail"]),
+    default="prefix",
+    show_default=True,
+    help="How over-budget tool results are previewed: keep the head (prefix) or head+tail.",
+)
+def cli(
+    model: str, max_turns: int, permission_mode: str, resume: bool, tool_preview_format: str
+) -> None:
     """nano-claude-code: a minimal Claude Code clone."""
     settings = Settings.load()
     config = AgentConfig(
         model=model,
         max_turns=max_turns,
         permission_mode=PermissionMode(permission_mode),
+        tool_result_preview_format=tool_preview_format,
     )
     config.context_window = _resolve_context_window(model, config.context_window)
 

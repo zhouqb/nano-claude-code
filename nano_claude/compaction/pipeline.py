@@ -5,7 +5,7 @@ cheapest / most-granular / most-reversible first, lossiest last, so an earlier
 layer that frees enough makes the later ones no-op and granular context
 survives as long as possible:
 
-    1. Budget Reduction   per-result size cap → spill big results to disk
+    1. Budget Reduction   per-batch size cap → spill big results to disk
     2. Snip               prune zombie/stale messages (structural, no model)
     3. Microcompact       clear OLD tool-result *content*, keep recent N
     4. Context Collapse   archive read/search spans → projected view
@@ -70,7 +70,9 @@ async def run_context_management(
 
     # View-only layers transform a copy; state.messages stays canonical.
     view = list(state.messages)
-    view = apply_tool_result_budget(view, state.budget, output_dir)  # Layer 1
+    view = apply_tool_result_budget(  # Layer 1
+        view, state.budget, output_dir, preview_format=config.tool_result_preview_format
+    )
     # Layers 2-4 (snip / microcompact / collapse) slot in here in later PRs.
 
     # --- Layer 5: Auto-Compact -------------------------------------------
