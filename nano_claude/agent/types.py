@@ -62,6 +62,7 @@ class AgentConfig:
     max_turns: int = 50
     permission_mode: PermissionMode = PermissionMode.DEFAULT
     auto_compact: bool = True
+    context_collapse: bool = False  # Layer 4 (experimental); off by default
     # Layer 1 spill excerpt shape: "prefix" (head only) | "head_tail" (head + tail).
     tool_result_preview_format: str = "prefix"
     # Layer 3 (microcompact) time gate: clear old tool results only after this
@@ -85,6 +86,8 @@ class LoopState:
     storage: Any | None = None
     # Layer 1 (budget) frozen-decision state; provisioned by the pipeline.
     budget: Any | None = None
+    # Layer 4 (collapse) commit log; provisioned by the pipeline when enabled.
+    collapse: Any | None = None
     # Wall-clock time (epoch seconds) of the last assistant message — the Layer 3
     # microcompact time gate. Set in the loop; seeded from the transcript on resume.
     last_assistant_at: float | None = None

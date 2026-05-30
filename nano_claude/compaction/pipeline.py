@@ -34,6 +34,7 @@ from nano_claude.compaction.auto_compact import (
     should_block,
     should_warn,
 )
+from nano_claude.compaction.collapse import apply_collapses_if_needed
 from nano_claude.compaction.compactor import compact_conversation
 from nano_claude.compaction.microcompact import microcompact
 from nano_claude.compaction.snip import snip_messages
@@ -88,13 +89,24 @@ async def run_context_management(
     view = microcompact(  # Layer 3
         view, gap_minutes=gap_minutes, gap_threshold_minutes=config.microcompact_gap_minutes
     )
-    # Layer 4 (collapse) slots in here in a later PR.
+
+    # --- Layer 4: Context Collapse (experimental, off by default) --------
+    # When enabled, collapse commits read/search spans at its lower threshold and
+    # OWNS the headroom — suppressing Layer 5 — until it runs out of spans to
+    # collapse, at which point it reports `exhausted` and auto-compact takes over.
+    collapse_suppresses_l5 = False
+    if config.context_collapse:
+        collapsed = await apply_collapses_if_needed(view, state, config)
+        view = collapsed.messages
+        if collapsed.committed and callbacks.on_collapse:
+            callbacks.on_collapse()
+        collapse_suppresses_l5 = not collapsed.exhausted
 
     # --- Layer 5: Auto-Compact -------------------------------------------
     # Last resort: summarize the whole conversation and replace it. When it
     # runs it mutates state.messages, so we reset the view to the compacted store
     # (the per-turn view-only layers re-derive cleanly next turn anyway).
-    if should_auto_compact(state, config):
+    if not collapse_suppresses_l5 and should_auto_compact(state, config):
         compacted = await compact_conversation(state, config)
         if compacted:
             view = list(state.messages)

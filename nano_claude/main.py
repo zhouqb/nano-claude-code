@@ -103,6 +103,10 @@ def _make_callbacks() -> LoopCallbacks:
         _end_stream()
         console.print(f"[dim]✂ Snipped {removed} stale message(s).[/dim]")
 
+    def on_collapse() -> None:
+        _end_stream()
+        console.print("[dim]⊟ Collapsed earlier read/search activity.[/dim]")
+
     return LoopCallbacks(
         on_text=on_text,
         on_assistant_start=on_assistant_start,
@@ -113,6 +117,7 @@ def _make_callbacks() -> LoopCallbacks:
         on_compact_disabled=on_compact_disabled,
         on_context_warning=on_context_warning,
         on_snip=on_snip,
+        on_collapse=on_collapse,
     )
 
 
@@ -250,6 +255,11 @@ def _init_state(config: AgentConfig, resume: bool) -> LoopState:
 )
 @click.option("--resume", is_flag=True, help="Resume a previous session in this directory.")
 @click.option(
+    "--context-collapse",
+    is_flag=True,
+    help="Enable Layer 4 context collapse (experimental): summarize old read/search spans.",
+)
+@click.option(
     "--tool-preview-format",
     type=click.Choice(["prefix", "head_tail"]),
     default="prefix",
@@ -257,7 +267,12 @@ def _init_state(config: AgentConfig, resume: bool) -> LoopState:
     help="How over-budget tool results are previewed: keep the head (prefix) or head+tail.",
 )
 def cli(
-    model: str, max_turns: int, permission_mode: str, resume: bool, tool_preview_format: str
+    model: str,
+    max_turns: int,
+    permission_mode: str,
+    resume: bool,
+    context_collapse: bool,
+    tool_preview_format: str,
 ) -> None:
     """nano-claude-code: a minimal Claude Code clone."""
     settings = Settings.load()
@@ -265,6 +280,7 @@ def cli(
         model=model,
         max_turns=max_turns,
         permission_mode=PermissionMode(permission_mode),
+        context_collapse=context_collapse,
         tool_result_preview_format=tool_preview_format,
     )
     config.context_window = _resolve_context_window(model, config.context_window)

@@ -131,6 +131,55 @@ async def test_blocking_only_when_autocompact_off():
     assert (await run_context_management(state, config, LoopCallbacks())).blocked is True
 
 
+async def test_collapse_suppresses_autocompact_when_it_gets_under(monkeypatch):
+    # Collapse enabled + a read/search span big enough to engage. Once collapse
+    # brings the projected view under threshold, Layer 5 is suppressed: the
+    # canonical store is NOT replaced this turn.
+    config = AgentConfig(context_window=4_000, context_collapse=True)
+    state = _state(3_900)
+    state.messages = [{"role": "user", "content": "investigate"}]
+    for i in range(4):
+        state.messages += [
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{"id": f"r{i}", "type": "function", "function": {"name": "Read"}}],
+            },
+            {"role": "tool", "tool_call_id": f"r{i}", "content": "x" * 5_000},
+        ]
+    canonical_before = list(state.messages)
+
+    monkeypatch.setattr(
+        litellm, "acompletion", make_acompletion([text_chunk("span summary"), usage_chunk(1, 1)])
+    )
+
+    await run_context_management(state, config, LoopCallbacks())
+
+    assert len(state.collapse.commits) == 1
+    assert state.messages == canonical_before  # Layer 5 suppressed
+
+
+async def test_collapse_falls_through_to_autocompact_when_exhausted(monkeypatch):
+    # Collapse enabled and over threshold, but NO collapsible span (plain text).
+    # Collapse reports exhausted → Layer 5 must run and replace the canonical store.
+    config = AgentConfig(context_window=4_000, context_collapse=True)
+    state = _state(3_900)
+    state.messages = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "x" * 15_000},  # over threshold, uncollapsible
+    ]
+
+    monkeypatch.setattr(
+        litellm, "acompletion", make_acompletion([text_chunk("FULL SUMMARY"), usage_chunk(1, 1)])
+    )
+
+    await run_context_management(state, config, LoopCallbacks())
+
+    # No span to collapse, so auto-compact took over and replaced history.
+    assert state.collapse.commits == []
+    assert any("FULL SUMMARY" in str(m.get("content")) for m in state.messages)
+
+
 async def test_loop_returns_blocked_without_calling_model(monkeypatch):
     config = AgentConfig(context_window=200_000, auto_compact=False)
     state = _state(198_000)
