@@ -1,52 +1,20 @@
 """Layer 1 — Budget Reduction.
 
-Caps the *aggregate* size of each tool-result batch. A "batch" is the run of
-consecutive ``role: "tool"`` messages answering one assistant turn's
-``tool_calls`` — nano's equivalent of the single user message that carries N
-``tool_result`` blocks in Claude Code. When a batch's combined size exceeds
-``BATCH_CHAR_BUDGET``, the *largest* fresh results are spilled to disk and
-replaced in the view with a preview pointing the model at the saved file
-(largest-first eviction until the batch is back under budget). The canonical
-``state.messages`` keeps full content for storage/scrollback.
+Caps the aggregate size of each tool-result *batch* (the run of consecutive
+``role: "tool"`` messages answering one assistant turn's ``tool_calls``). When a
+batch exceeds ``BATCH_CHAR_BUDGET``, its largest fresh results are spilled to
+disk (largest-first until under budget) and replaced in the view with a preview
+pointing at the saved file; ``state.messages`` keeps the full content. Mirrors
+Claude Code's ``enforceToolResultBudget`` / ``selectFreshToReplace``.
 
-This mirrors Claude Code's ``enforceToolResultBudget`` / ``selectFreshToReplace``:
-budgeting across the batch (not per result) is what catches the case where many
-medium results in one round overflow the next prompt even though none of them is
-individually large.
+Decisions are frozen per ``tool_call_id`` to keep the prompt-cache prefix stable
+across turns: a replaced result re-emits the same preview (byte-identical), and a
+seen-but-unreplaced result is never replaced later. Spill paths are derived
+deterministically from the ``tool_call_id`` so the preview is identical across
+``--resume``.
 
-The decisive property is **cache-stable decisions** keyed by ``tool_call_id``.
-This is *not* "we edit cached history cheaply" — editing any token mid-prompt
-invalidates the cache from that point on, and nothing here changes that. The
-guarantee is narrower, and comes in two parts:
-
-  1. **The full result never enters the sent prefix.** A result is spilled the
-     first time the pipeline sees it — a fresh tail message, produced this very
-     turn, past the cache frontier and not yet transmitted. So replacing it
-     destroys no cache: the bytes it replaces were never sent. Freezing enforces
-     this: a result is either spilled on first sight or added to ``seen_ids`` and
-     **never replaced later**. There is no "sent in full on turn N, spilled on
-     turn N+3" path — that path is the one that *would* rewrite already-cached
-     history, and it cannot happen.
-
-  2. **The preview that does enter the prefix never changes.** Once a preview is
-     in the prefix, later turns append after it, so its bytes must be identical
-     every turn or the cache breaks at its position. Two things guarantee that:
-     the frozen ``replacements[tcid]`` re-emits the exact same string (the budget
-     is never re-evaluated, so the decision can't flip), and the spill path is
-     derived deterministically from ``tool_call_id`` (no timestamp/uuid), so the
-     preview is byte-identical even across ``--resume``, when the decision is
-     re-derived from an empty state — no leaked files, no churn.
-
-So nothing cached is destroyed when a result is spilled (part 1), and nothing
-already in the prefix is later mutated (part 2). A non-deterministic preview —
-one embedding a timestamp or uuid — would violate part 2 and re-invalidate the
-cache at its position every single turn; hence the deterministic path.
-
-Two preview shapes are supported (``PreviewFormat``), both pure functions of the
-content (so part 2 holds for either): ``"prefix"`` (default) keeps the head;
-``"head_tail"`` keeps the head and tail and elides the middle, for output whose
-end also matters (a stack trace's final frames, a command's exit summary). The
-full content is always spilled to disk for the model to ``Read`` back regardless.
+``PreviewFormat`` selects the excerpt shape: ``"prefix"`` (head only, default) or
+``"head_tail"`` (head + tail, middle elided).
 """
 
 from __future__ import annotations
@@ -57,11 +25,14 @@ from typing import Literal
 
 from nano_claude.tools.overflow import save_overflow_to
 
-# Aggregate cap on a single tool-result batch, in characters (~5k tokens).
-# (Claude Code sources its per-message limit from GrowthBook; nano uses a constant.)
+# Aggregate cap on a single tool-result batch, in characters (~5k tokens). Claude
+# Code's per-message budget is MAX_TOOL_RESULTS_PER_MESSAGE_CHARS = 200_000 (~50k
+# tokens, GrowthBook-overridable); nano runs ~10x tighter on purpose, so Layer 1
+# actually engages in a small session instead of deferring everything to L3–L5.
 BATCH_CHAR_BUDGET = 20_000
-# Total inline budget for a spilled result's preview, in characters.
-PREVIEW_CHARS = 500
+# Inline preview kept from a spilled result, in characters. Matches Claude Code's
+# PREVIEW_SIZE_BYTES = 2000.
+PREVIEW_CHARS = 2000
 
 # How a spilled result is excerpted inline. Both shapes are pure functions of the
 # content, so the preview stays byte-stable across turns (see module docstring).
@@ -154,8 +125,15 @@ def _process_batch(
         elif isinstance(m.get("content"), str):
             fresh.append(m)
 
-    over_budget = frozen_size + sum(_content_len(m) for m in fresh) > BATCH_CHAR_BUDGET
-    selected = _select_fresh_to_replace(fresh, frozen_size) if over_budget else set()
+    # Fast path (mirrors CC's `if (fresh.length === 0) continue`): a batch with no
+    # fresh results carries no new content to budget, so skip the eviction search —
+    # every id just re-applies its already-frozen fate below. A given batch is thus
+    # budgeted exactly once, on the turn it first appears; later turns only re-apply.
+    if fresh:
+        over_budget = frozen_size + sum(_content_len(m) for m in fresh) > BATCH_CHAR_BUDGET
+        selected = _select_fresh_to_replace(fresh, frozen_size) if over_budget else set()
+    else:
+        selected = set()
 
     out: list[dict] = []
     changed = False
@@ -165,7 +143,9 @@ def _process_batch(
             out.append({**m, "content": state.replacements[tcid]})
             changed = True
             continue
-        state.seen_ids.add(tcid)  # freeze this result's fate
+        # First sight of this id (re-applied/seen ids took the branches above):
+        # freeze its fate now so it is never re-budgeted on a later turn.
+        state.seen_ids.add(tcid)
         if tcid in selected:
             preview = _preview(m["content"], str(tcid), output_dir, fmt)
             state.replacements[tcid] = preview

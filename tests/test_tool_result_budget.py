@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from nano_claude.compaction.tool_result_budget import (
+    PREVIEW_CHARS,
     ContentReplacementState,
     apply_tool_result_budget,
 )
@@ -127,35 +128,39 @@ def test_seen_but_unreplaced_never_replaced_later(tmp_path):
 # --- preview format ---------------------------------------------------------
 
 
+# Fixtures are sized relative to PREVIEW_CHARS so the head (all "A"), elided
+# middle (all "B"), and tail (all "C") regions stay cleanly separated whatever
+# PREVIEW_CHARS is. The "B" filler also pushes the result well over budget.
+_HALF = PREVIEW_CHARS // 2
+_HT_BODY = "A" * (_HALF + 100) + "B" * 25_000 + "C" * (_HALF + 100)
+
+
 def test_default_format_is_prefix(tmp_path):
     state = ContentReplacementState()
-    body = "A" * 300 + "B" * 25_000 + "C" * 300
-    out = apply_tool_result_budget(_batch([("c1", body)]), state, tmp_path)
+    out = apply_tool_result_budget(_batch([("c1", _HT_BODY)]), state, tmp_path)
     preview = _tool_contents(out)["c1"]
-    assert preview.startswith("A" * 250)  # head kept
+    assert preview.startswith("A" * _HALF)  # head kept
     assert "C" not in preview  # tail dropped under the prefix default
     assert "middle elided" not in preview
 
 
 def test_head_tail_format_keeps_both_ends(tmp_path):
     state = ContentReplacementState()
-    body = "A" * 300 + "B" * 25_000 + "C" * 300
     out = apply_tool_result_budget(
-        _batch([("c1", body)]), state, tmp_path, preview_format="head_tail"
+        _batch([("c1", _HT_BODY)]), state, tmp_path, preview_format="head_tail"
     )
     preview = _tool_contents(out)["c1"]
-    assert preview.startswith("A" * 250)  # head kept
-    assert "C" * 250 in preview  # tail kept
+    assert preview.startswith("A" * _HALF)  # head kept
+    assert "C" * _HALF in preview  # tail kept
     assert "middle elided" in preview
     assert "B" not in preview  # middle elided
     # Full content is still on disk regardless of preview shape.
-    assert (tmp_path / "budget-c1.txt").read_text() == body
+    assert (tmp_path / "budget-c1.txt").read_text() == _HT_BODY
 
 
 def test_head_tail_decision_is_frozen(tmp_path):
     state = ContentReplacementState()
-    body = "A" * 300 + "B" * 25_000 + "C" * 300
-    msgs = _batch([("c1", body)])
+    msgs = _batch([("c1", _HT_BODY)])
     first = _tool_contents(
         apply_tool_result_budget(msgs, state, tmp_path, preview_format="head_tail")
     )
