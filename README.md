@@ -36,7 +36,9 @@ nano-claude --model gpt-4o
 nano-claude --model deepseek/deepseek-chat --max-turns 20
 ```
 
-The model can also be set via `NANO_CLAUDE_MODEL`. Type `/quit` (or Ctrl-D) to exit.
+The model can also be set via `NANO_CLAUDE_MODEL`. Type `/init` to generate
+or improve a repository `CLAUDE.md`; type `/compact` to manually compact the
+conversation; type `/quit` (or Ctrl-D) to exit.
 
 ## Development
 
