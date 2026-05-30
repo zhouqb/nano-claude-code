@@ -17,11 +17,15 @@ What nano considers a zombie:
 A partially-interrupted turn (some real results, some interrupted) is kept — we
 only drop turns that are entirely dead.
 
-Snip runs every turn on the derived view; ``/snip`` applies it to the canonical
-store to prune scrollback too. Because nano's context signal is the
-API-reported size of the *already-snipped* send (``last_input_tokens``), the
-savings are reflected automatically next turn — no token plumbing needed (unlike
-CC, whose count comes from a protected-tail message that survives snip).
+Snip runs every turn on the derived *view* only — it never mutates the canonical
+``state.messages`` (which the JSONL transcript mirrors). That keeps it safe
+across ``--resume``: the transcript is untouched, so there is no stale-vs-pruned
+divergence, and ``repair_messages()`` on resume can't fight a canonical prune.
+Each turn re-derives the pruned view from the freshly-loaded history. Because
+nano's context signal is the API-reported size of the *already-snipped* send
+(``last_input_tokens``), the savings are reflected automatically next turn — no
+token plumbing needed (unlike CC, whose count comes from a protected-tail
+message that survives snip).
 """
 
 from __future__ import annotations
