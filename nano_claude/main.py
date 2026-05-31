@@ -20,6 +20,7 @@ from nano_claude.agent.loop import LoopCallbacks, query_loop
 from nano_claude.agent.types import AgentConfig, LoopState, StopReason, TokenUsage
 from nano_claude.compaction.compactor import compact_conversation
 from nano_claude.context import build_system_prompt
+from nano_claude.extensibility.hooks import HookEvent, execute_hooks, register_hooks
 from nano_claude.permissions.modes import PermissionMode
 from nano_claude.permissions.prompt import make_cli_prompter
 from nano_claude.permissions.settings import Settings
@@ -175,6 +176,19 @@ def _pick_session(cwd: str):
     return None
 
 
+async def _fire_session_start(config: AgentConfig, state: LoopState) -> None:
+    """Run SessionStart hooks; inject their stdout as a context note for the model."""
+    session_id = state.storage.session_id if state.storage is not None else ""
+    outcome = await execute_hooks(HookEvent.SESSION_START, session_id=session_id, cwd=config.cwd)
+    for warning in outcome.warnings:
+        console.print(f"[yellow]SessionStart hook: {warning}[/yellow]")
+    if outcome.context_text:
+        note = {"role": "system", "content": f"[SessionStart hook]\n{outcome.context_text}"}
+        state.messages.append(note)
+        if state.storage is not None:
+            state.storage.append_message(note)
+
+
 async def _repl(config: AgentConfig, settings: Settings, state: LoopState) -> None:
     session: PromptSession = PromptSession()
     prompter = make_cli_prompter(session)
@@ -185,6 +199,8 @@ async def _repl(config: AgentConfig, settings: Settings, state: LoopState) -> No
         f"mode={config.permission_mode.value}, session={storage.session_id})[/dim]"
     )
     console.print("[dim]Type your message. /quit or Ctrl-D to exit.[/dim]\n")
+
+    await _fire_session_start(config, state)
 
     try:
         while True:
@@ -213,9 +229,7 @@ async def _repl(config: AgentConfig, settings: Settings, state: LoopState) -> No
                 await storage.flush()
                 storage = _reset_state_for_clear(state, config)
                 await storage.flush()
-                console.print(
-                    f"[dim]Conversation cleared. New session: {storage.session_id}[/dim]"
-                )
+                console.print(f"[dim]Conversation cleared. New session: {storage.session_id}[/dim]")
                 continue
             if user_input == "/init":
                 console.print("[dim]Analyzing codebase to initialize CLAUDE.md...[/dim]")
@@ -239,6 +253,13 @@ async def _repl(config: AgentConfig, settings: Settings, state: LoopState) -> No
                 continue
             finally:
                 await storage.flush()
+
+            if result.reason is StopReason.COMPLETED:
+                stop = await execute_hooks(
+                    HookEvent.STOP, session_id=storage.session_id, cwd=config.cwd
+                )
+                for warning in stop.warnings:
+                    console.print(f"[yellow]Stop hook: {warning}[/yellow]")
 
             console.print()
             if result.reason is StopReason.MAX_TURNS:
@@ -333,6 +354,7 @@ def cli(
 ) -> None:
     """nano-claude-code: a minimal Claude Code clone."""
     settings = Settings.load()
+    register_hooks(settings.hooks)
     config = AgentConfig(
         model=model,
         max_turns=max_turns,

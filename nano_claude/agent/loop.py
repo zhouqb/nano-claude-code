@@ -24,6 +24,7 @@ from pydantic import ValidationError
 from nano_claude.agent.types import AgentConfig, LoopResult, LoopState, StopReason
 from nano_claude.compaction.pipeline import run_context_management
 from nano_claude.compaction.token_counter import record_input_tokens
+from nano_claude.extensibility.hooks import HookEvent, execute_hooks
 from nano_claude.permissions.manager import (
     Prompter,
     PromptOutcome,
@@ -124,6 +125,7 @@ async def _resolve_call(
     settings: Settings,
     prompter: Prompter,
     callbacks: LoopCallbacks,
+    session_id: str,
 ) -> _CallPlan:
     """Validate args and resolve permissions for a single tool call."""
     name = tc.get("name")
@@ -147,10 +149,25 @@ async def _resolve_call(
             callbacks.on_tool_denied(name, decision.reason)
         return _CallPlan(fixed_content=f"Permission denied: {decision.reason or 'denied'}")
 
+    # PreToolUse hooks get the final say: exit code 2 denies the call.
+    pre = await execute_hooks(
+        HookEvent.PRE_TOOL_USE,
+        session_id=session_id,
+        cwd=context.cwd,
+        tool_name=name,
+        tool_input=parsed,
+    )
+    if pre.blocked:
+        if callbacks.on_tool_denied:
+            callbacks.on_tool_denied(name, pre.block_reason)
+        return _CallPlan(fixed_content=f"Blocked by hook: {pre.block_reason}")
+
     return _CallPlan(tool=tool, args_model=args_model, args_dict=parsed)
 
 
-async def _run_call(plan: _CallPlan, context: ToolContext, callbacks: LoopCallbacks) -> str:
+async def _run_call(
+    plan: _CallPlan, context: ToolContext, callbacks: LoopCallbacks, session_id: str
+) -> str:
     """Execute a resolved call (or return its fixed content)."""
     if plan.fixed_content is not None:
         return plan.fixed_content
@@ -165,6 +182,18 @@ async def _run_call(plan: _CallPlan, context: ToolContext, callbacks: LoopCallba
         result = ToolResult.fail(f"Tool raised an exception: {exc}")
     if callbacks.on_tool_end:
         callbacks.on_tool_end(plan.tool.name, result)
+
+    # PostToolUse hooks may append context the model sees with the result.
+    post = await execute_hooks(
+        HookEvent.POST_TOOL_USE,
+        session_id=session_id,
+        cwd=context.cwd,
+        tool_name=plan.tool.name,
+        tool_input=plan.args_dict or {},
+        tool_response=result.output,
+    )
+    if post.context_text:
+        return f"{result.output}\n[hook] {post.context_text}"
     return result.output
 
 
@@ -184,6 +213,7 @@ async def query_loop(
     if on_text is not None:
         callbacks.on_text = on_text
 
+    session_id = state.storage.session_id if state.storage is not None else ""
     tools = get_tools(config.permission_mode)
     tool_schemas = [t.to_api_schema() for t in tools]
     context = ToolContext(
@@ -277,9 +307,12 @@ async def query_loop(
 
         # Resolve permissions sequentially, then execute allowed calls concurrently.
         plans = [
-            await _resolve_call(tc, context, settings, prompter, callbacks) for tc in tool_calls
+            await _resolve_call(tc, context, settings, prompter, callbacks, session_id)
+            for tc in tool_calls
         ]
-        contents = await asyncio.gather(*(_run_call(plan, context, callbacks) for plan in plans))
+        contents = await asyncio.gather(
+            *(_run_call(plan, context, callbacks, session_id) for plan in plans)
+        )
 
         for tc, content in zip(tool_calls, contents, strict=True):
             record({"role": "tool", "tool_call_id": tc["id"], "content": content})
