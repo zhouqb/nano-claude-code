@@ -212,3 +212,43 @@ async def test_subagent_cannot_call_task(monkeypatch):
 
     assert captured  # the subagent made at least one model call
     assert all("Task" not in advertised for advertised in captured)
+
+
+async def test_subagent_emitting_task_is_refused(monkeypatch):
+    """Even if a subagent emits an (unadvertised) Task call, it's refused at
+    resolution — no nested subagent is spawned (recursion cap holds)."""
+    task_args = json.dumps(
+        {"subagent_type": "explorer", "description": "x", "prompt": "recurse"}
+    )
+    streams = iter(
+        [
+            [tool_call_chunk(0, "c1", "Task", task_args), usage_chunk(5, 2)],  # tries Task
+            [text_chunk("done without recursing"), usage_chunk(2, 1)],
+        ]
+    )
+    calls = {"n": 0, "messages": []}
+
+    async def _acompletion(*args, **kwargs):
+        calls["n"] += 1
+        calls["messages"].append(kwargs.get("messages"))
+        return FakeStream(next(streams))
+
+    monkeypatch.setattr(litellm, "acompletion", _acompletion)
+
+    ctx = ToolContext(
+        cwd="/",
+        cancel_event=asyncio.Event(),
+        permission_mode=PermissionMode.BYPASS,
+        settings=Settings(),
+    )
+    result = await run_subagent_loop(get_agent("explorer"), "go", ctx)
+
+    assert result.reason is StopReason.COMPLETED
+    assert result.final_text == "done without recursing"
+    # Exactly two model calls — a third would mean a nested subagent was spawned.
+    assert calls["n"] == 2
+    # The refused Task surfaced as a tool result rather than running.
+    tool_results = [
+        m for msgs in calls["messages"] for m in msgs if m.get("role") == "tool"
+    ]
+    assert any("not permitted" in m["content"] for m in tool_results)
