@@ -33,8 +33,9 @@ async def read_first(file_path: Path, context: ToolContext) -> None:
 # --- registry ---------------------------------------------------------------
 
 
-def test_registry_exposes_six_tools():
-    assert len(BASE_TOOLS) == 6
+def test_registry_exposes_base_tools():
+    names = {t.name for t in BASE_TOOLS}
+    assert {"Bash", "Read", "Write", "Edit", "GlobTool", "Grep", "Task"} <= names
     assert get_tool("Read") is not None
     assert get_tool("Nonexistent") is None
 

@@ -242,6 +242,12 @@ async def query_loop(
         permission_mode=config.permission_mode,
         output_dir=session_output_dir(state.storage),
         read_file_state=state.read_file_state,
+        # Carried so the Task tool can spawn a subagent that inherits the model,
+        # rolls its cost up here, and shares the permission path.
+        parent_model=config.model,
+        token_usage_sink=state.token_usage,
+        settings=settings,
+        prompter=prompter,
     )
 
     def record(message: dict) -> None:

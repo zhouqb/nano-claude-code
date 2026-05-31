@@ -36,6 +36,7 @@ from nano_claude.session.restore import (
     restore_read_file_state,
 )
 from nano_claude.session.storage import SessionStorage, new_session_id, session_file
+from nano_claude.subagents import load_agents
 from nano_claude.tools.base import ToolResult
 
 DEFAULT_MODEL = os.environ.get("NANO_CLAUDE_MODEL", "anthropic/claude-sonnet-4-6")
@@ -380,6 +381,7 @@ def cli(
 ) -> None:
     """nano-claude-code: a minimal Claude Code clone."""
     settings = Settings.load()
+    load_agents()  # populate AGENT_REGISTRY (built-in + ~/.nano-claude/agents/*.md)
     config = AgentConfig(
         model=model,
         max_turns=max_turns,

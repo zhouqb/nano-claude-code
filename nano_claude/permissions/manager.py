@@ -12,6 +12,7 @@ before execution. Order of resolution:
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from enum import Enum, auto
 
@@ -32,6 +33,10 @@ class PromptOutcome(Enum):
 
 # Given (tool, args dict, prompt text) -> the user's choice.
 Prompter = Callable[[Tool, dict, str], Awaitable[PromptOutcome]]
+
+# Serializes interactive prompts so concurrent subagents don't fight over the
+# terminal — one prompt resolves before the next begins.
+_PROMPT_LOCK = asyncio.Lock()
 
 
 def apply_mode_transform(
@@ -70,7 +75,8 @@ async def has_permission_to_use_tool(
     if decision.behavior != "ask":
         return decision
 
-    outcome = await prompter(tool, args_dict, decision.prompt)
+    async with _PROMPT_LOCK:
+        outcome = await prompter(tool, args_dict, decision.prompt)
     if outcome is PromptOutcome.ALLOW_ALWAYS:
         settings.add_allow_rule(tool.name)
         settings.save()
