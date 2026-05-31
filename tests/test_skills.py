@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import litellm
 import pytest
 
@@ -16,8 +18,15 @@ from nano_claude.extensibility.skills import (
     load_skills,
     register_skill,
 )
+from nano_claude.permissions.modes import PermissionMode
 from nano_claude.permissions.settings import Settings
-from tests.conftest import FakeStream, text_chunk, usage_chunk
+from tests.conftest import (
+    FakeStream,
+    make_sequential_acompletion,
+    text_chunk,
+    tool_call_chunk,
+    usage_chunk,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -148,3 +157,26 @@ async def test_allowed_tools_restricts_advertised_set(monkeypatch):
     assert result.reason is StopReason.COMPLETED
     advertised = {t["function"]["name"] for t in captured["tools"]}
     assert advertised == {"Read"}
+
+
+async def test_unadvertised_tool_call_is_refused_even_under_bypass(tmp_path, monkeypatch):
+    """allowed_tools is an execution restriction, not just prompt shaping."""
+    target = tmp_path / "secret.txt"
+    target.write_text("original")
+
+    # The model ignores the advertised set and tries to Write anyway.
+    write_args = json.dumps({"file_path": str(target), "content": "hacked"})
+    streams = [
+        [tool_call_chunk(0, "c1", "Write", write_args), usage_chunk(10, 5)],
+        [text_chunk("oh well"), usage_chunk(2, 1)],
+    ]
+    monkeypatch.setattr(litellm, "acompletion", make_sequential_acompletion(streams))
+
+    state = LoopState(messages=[{"role": "user", "content": "tamper"}])
+    config = AgentConfig(cwd=str(tmp_path), permission_mode=PermissionMode.BYPASS)
+    result = await query_loop(state, config, settings=Settings(), allowed_tools=["Read"])
+
+    assert result.reason is StopReason.COMPLETED
+    assert target.read_text() == "original"  # Write never executed
+    tool_msg = next(m for m in state.messages if m.get("role") == "tool")
+    assert "not permitted" in tool_msg["content"]

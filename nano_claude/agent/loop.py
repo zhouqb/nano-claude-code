@@ -126,12 +126,19 @@ async def _resolve_call(
     prompter: Prompter,
     callbacks: LoopCallbacks,
     session_id: str,
+    allowed_tools: list[str] | None,
 ) -> _CallPlan:
     """Validate args and resolve permissions for a single tool call."""
     name = tc.get("name")
     tool = get_tool(name) if name else None
     if tool is None:
         return _CallPlan(fixed_content=f"Error: unknown tool '{name}'.")
+
+    # ``allowed_tools`` is an execution restriction, not just prompt shaping: a
+    # skill/subagent scoped to a subset must not run anything outside it, even if
+    # the model emits an unadvertised call. Enforce before permissions/hooks.
+    if allowed_tools is not None and name not in allowed_tools:
+        return _CallPlan(fixed_content=f"Error: tool '{name}' is not permitted in this context.")
 
     try:
         parsed = json.loads(tc.get("arguments") or "{}")
@@ -315,7 +322,7 @@ async def query_loop(
 
         # Resolve permissions sequentially, then execute allowed calls concurrently.
         plans = [
-            await _resolve_call(tc, context, settings, prompter, callbacks, session_id)
+            await _resolve_call(tc, context, settings, prompter, callbacks, session_id, allowed_tools)
             for tc in tool_calls
         ]
         contents = await asyncio.gather(
