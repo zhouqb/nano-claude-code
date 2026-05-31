@@ -40,6 +40,13 @@ class ToolContext:
     # Claude Code requires a file to be read before an existing file is edited
     # or overwritten, and rejects stale writes if the file changed since then.
     read_file_state: dict[str, FileReadSnapshot] = field(default_factory=dict)
+    # Threaded through so the Task tool can spawn a properly-configured subagent
+    # loop (model inheritance, cost roll-up, shared permission path). Typed as
+    # ``Any`` to avoid importing the loop/permission types here.
+    parent_model: str = ""
+    token_usage_sink: Any = None  # parent TokenUsage; subagents merge cost into it
+    settings: Any = None  # permission Settings, shared with subagents
+    prompter: Any = None  # permission prompter, shared with subagents
 
 
 @dataclass

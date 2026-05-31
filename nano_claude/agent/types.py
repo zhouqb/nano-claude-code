@@ -40,6 +40,13 @@ class TokenUsage:
             + self.cache_read_tokens
         )
 
+    def merge(self, other: TokenUsage) -> None:
+        """Roll another usage tally into this one (subagent cost → parent)."""
+        self.input_tokens += other.input_tokens
+        self.output_tokens += other.output_tokens
+        self.cache_creation_tokens += other.cache_creation_tokens
+        self.cache_read_tokens += other.cache_read_tokens
+
     def update_from_litellm(self, chunk: Any) -> None:
         """Accumulate usage from a LiteLLM streaming chunk's ``usage`` field.
 
