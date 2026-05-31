@@ -19,6 +19,11 @@ DEFAULT_SETTINGS_PATH = Path.home() / ".nano-claude" / "settings.json"
 # Tools that are safe enough to allow by default on a fresh install.
 DEFAULT_ALLOW_PATTERNS = ["Read", "GlobTool", "Grep"]
 
+# settings.json keys this class owns; everything else (e.g. "hooks", and
+# "mcpServers" once later phases add it) is round-tripped verbatim so persisting
+# a permission decision never drops unrelated sections of the file.
+_MANAGED_KEYS = frozenset({"permissionMode", "alwaysAllowRules", "alwaysDenyRules"})
+
 
 def _parse_hooks(raw: object) -> list[HookDefinition]:
     """Parse the ``"hooks"`` list, skipping malformed entries."""
@@ -40,6 +45,9 @@ class Settings:
     deny_rules: list[PermissionRule] = field(default_factory=list)
     hooks: list[HookDefinition] = field(default_factory=list)
     path: Path | None = None
+    # Unrecognized settings.json keys, preserved across save() so a persisted
+    # permission decision can't silently wipe hooks/mcpServers/etc.
+    extra: dict = field(default_factory=dict)
 
     @classmethod
     def load(cls, path: Path | None = None) -> Settings:
@@ -64,18 +72,19 @@ class Settings:
             allow_rules=[PermissionRule(p, "allow") for p in data.get("alwaysAllowRules", [])],
             deny_rules=[PermissionRule(p, "deny") for p in data.get("alwaysDenyRules", [])],
             hooks=_parse_hooks(data.get("hooks", [])),
+            extra={k: v for k, v in data.items() if k not in _MANAGED_KEYS},
             path=path,
         )
 
     def to_json(self) -> str:
-        return json.dumps(
-            {
-                "permissionMode": self.permission_mode.value,
-                "alwaysAllowRules": [r.pattern for r in self.allow_rules],
-                "alwaysDenyRules": [r.pattern for r in self.deny_rules],
-            },
-            indent=2,
-        )
+        # Start from the managed keys, then re-attach everything else verbatim.
+        out = {
+            "permissionMode": self.permission_mode.value,
+            "alwaysAllowRules": [r.pattern for r in self.allow_rules],
+            "alwaysDenyRules": [r.pattern for r in self.deny_rules],
+        }
+        out.update(self.extra)
+        return json.dumps(out, indent=2)
 
     def save(self) -> None:
         if self.path is None:

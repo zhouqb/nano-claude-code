@@ -223,3 +223,31 @@ def test_settings_parses_hooks(tmp_path):
     assert settings.hooks[0].matcher == "Bash(rm *)"
     assert settings.hooks[1].run_async is True
     assert settings.hooks[1].timeout_s == 5
+
+
+def test_save_preserves_hooks_and_unknown_keys(tmp_path):
+    """Persisting a permission decision must not drop the hooks section."""
+    path = tmp_path / "settings.json"
+    path.write_text(
+        json.dumps(
+            {
+                "permissionMode": "default",
+                "alwaysAllowRules": ["Read"],
+                "hooks": [{"event": "Stop", "command": "notify.sh"}],
+                "mcpServers": {"fs": {"command": "npx"}},  # not yet a field — must survive
+                "futureSetting": 42,  # entirely unknown key — must survive
+            }
+        )
+    )
+
+    settings = Settings.load(path)
+    settings.add_allow_rule("Bash")  # simulate a "deny/allow always" choice
+    settings.save()
+
+    reloaded = json.loads(path.read_text())
+    assert reloaded["hooks"] == [{"event": "Stop", "command": "notify.sh"}]
+    assert reloaded["mcpServers"] == {"fs": {"command": "npx"}}
+    assert reloaded["futureSetting"] == 42
+    assert "Bash" in reloaded["alwaysAllowRules"]
+    # And the round-tripped file still parses its hooks.
+    assert len(Settings.load(path).hooks) == 1
