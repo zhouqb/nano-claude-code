@@ -21,6 +21,7 @@ from nano_claude.agent.types import AgentConfig, LoopState, StopReason, TokenUsa
 from nano_claude.compaction.compactor import compact_conversation
 from nano_claude.context import build_system_prompt
 from nano_claude.extensibility.hooks import HookEvent, execute_hooks, register_hooks
+from nano_claude.extensibility.skills import SkillContext, dispatch_skill, load_skills
 from nano_claude.permissions.modes import PermissionMode
 from nano_claude.permissions.prompt import make_cli_prompter
 from nano_claude.permissions.settings import Settings
@@ -235,6 +236,18 @@ async def _repl(config: AgentConfig, settings: Settings, state: LoopState) -> No
                 console.print("[dim]Analyzing codebase to initialize CLAUDE.md...[/dim]")
                 user_input = INIT_PROMPT
 
+            # A user-defined /command expands into a prompt (and may restrict tools).
+            allowed_tools: list[str] | None = None
+            if user_input.startswith("/"):
+                dispatch = await dispatch_skill(
+                    user_input, SkillContext(cwd=config.cwd, session_id=storage.session_id)
+                )
+                if dispatch is not None:
+                    name = user_input[1:].split(" ", 1)[0]
+                    console.print(f"[dim]▶ Running /{name} skill.[/dim]")
+                    user_input = dispatch.prompt
+                    allowed_tools = dispatch.allowed_tools
+
             user_msg = {"role": "user", "content": user_input}
             state.messages.append(user_msg)
             storage.append_message(user_msg)
@@ -247,6 +260,7 @@ async def _repl(config: AgentConfig, settings: Settings, state: LoopState) -> No
                     settings=settings,
                     prompter=prompter,
                     callbacks=_make_callbacks(),
+                    allowed_tools=allowed_tools,
                 )
             except Exception as exc:  # noqa: BLE001 - surface any provider error to the user
                 console.print(f"\n[red]Error:[/red] {exc}")
@@ -355,6 +369,7 @@ def cli(
     """nano-claude-code: a minimal Claude Code clone."""
     settings = Settings.load()
     register_hooks(settings.hooks)
+    load_skills()
     config = AgentConfig(
         model=model,
         max_turns=max_turns,

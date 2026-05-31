@@ -205,8 +205,14 @@ async def query_loop(
     prompter: Prompter | None = None,
     on_text: TextCallback | None = None,
     callbacks: LoopCallbacks | None = None,
+    allowed_tools: list[str] | None = None,
 ) -> LoopResult:
-    """Run the agent loop until the model stops requesting tools."""
+    """Run the agent loop until the model stops requesting tools.
+
+    ``allowed_tools`` restricts the advertised tool set for this invocation
+    (a skill's ``allowed-tools``, or a subagent's tool subset). ``None`` means
+    the full registry for the current permission mode.
+    """
     settings = settings or Settings()
     prompter = prompter or _deny_all_prompter
     callbacks = callbacks or LoopCallbacks()
@@ -215,6 +221,8 @@ async def query_loop(
 
     session_id = state.storage.session_id if state.storage is not None else ""
     tools = get_tools(config.permission_mode)
+    if allowed_tools is not None:
+        tools = [t for t in tools if t.name in allowed_tools]
     tool_schemas = [t.to_api_schema() for t in tools]
     context = ToolContext(
         cwd=config.cwd,
