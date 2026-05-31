@@ -126,12 +126,19 @@ async def _resolve_call(
     prompter: Prompter,
     callbacks: LoopCallbacks,
     session_id: str,
+    allowed_tools: list[str] | None,
 ) -> _CallPlan:
     """Validate args and resolve permissions for a single tool call."""
     name = tc.get("name")
     tool = get_tool(name) if name else None
     if tool is None:
         return _CallPlan(fixed_content=f"Error: unknown tool '{name}'.")
+
+    # ``allowed_tools`` is an execution restriction, not just prompt shaping: a
+    # skill/subagent scoped to a subset must not run anything outside it, even if
+    # the model emits an unadvertised call. Enforce before permissions/hooks.
+    if allowed_tools is not None and name not in allowed_tools:
+        return _CallPlan(fixed_content=f"Error: tool '{name}' is not permitted in this context.")
 
     try:
         parsed = json.loads(tc.get("arguments") or "{}")
@@ -205,8 +212,14 @@ async def query_loop(
     prompter: Prompter | None = None,
     on_text: TextCallback | None = None,
     callbacks: LoopCallbacks | None = None,
+    allowed_tools: list[str] | None = None,
 ) -> LoopResult:
-    """Run the agent loop until the model stops requesting tools."""
+    """Run the agent loop until the model stops requesting tools.
+
+    ``allowed_tools`` restricts the advertised tool set for this invocation
+    (a skill's ``allowed-tools``, or a subagent's tool subset). ``None`` means
+    the full registry for the current permission mode.
+    """
     settings = settings or Settings()
     prompter = prompter or _deny_all_prompter
     callbacks = callbacks or LoopCallbacks()
@@ -215,6 +228,8 @@ async def query_loop(
 
     session_id = state.storage.session_id if state.storage is not None else ""
     tools = get_tools(config.permission_mode)
+    if allowed_tools is not None:
+        tools = [t for t in tools if t.name in allowed_tools]
     tool_schemas = [t.to_api_schema() for t in tools]
     context = ToolContext(
         cwd=config.cwd,
@@ -307,7 +322,7 @@ async def query_loop(
 
         # Resolve permissions sequentially, then execute allowed calls concurrently.
         plans = [
-            await _resolve_call(tc, context, settings, prompter, callbacks, session_id)
+            await _resolve_call(tc, context, settings, prompter, callbacks, session_id, allowed_tools)
             for tc in tool_calls
         ]
         contents = await asyncio.gather(
