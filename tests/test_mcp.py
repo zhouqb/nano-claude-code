@@ -66,6 +66,25 @@ def test_namespacing_and_schema_passthrough():
     assert api["function"]["parameters"] == schema
 
 
+def test_name_is_normalized_but_raw_name_preserved():
+    # Spaces / dots / slashes in server and tool names would make an invalid
+    # OpenAI function name; they're normalized for the advertised/permission
+    # name while call_tool still uses the raw name.
+    tool = MCPTool("my server.v2", session=None, spec=_spec("read/file"))
+    assert tool.name == "mcp__my_server_v2__read_file"
+    assert tool._raw_name == "read/file"
+    # The advertised name matches the API function-name pattern.
+    import re
+
+    assert re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", tool.name)
+
+
+def test_claudeai_server_underscores_collapsed():
+    tool = MCPTool("claude.ai Slack", session=None, spec=_spec("send"))
+    # "claude.ai Slack" → "claude_ai_Slack" (collapsed, no leading/trailing _).
+    assert tool.name == "mcp__claude_ai_Slack__send"
+
+
 async def test_call_joins_text_content():
     class FakeSession:
         async def call_tool(self, name, args):

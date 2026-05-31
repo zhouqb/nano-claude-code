@@ -9,16 +9,38 @@ permissions, hooks). Unlike built-ins it carries the server's raw JSON Schema
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from nano_claude.tools.base import PermissionDecision, Tool, ToolContext, ToolResult
+
+# Claude.ai server names carry this prefix; mirrors Claude Code's normalization.
+_CLAUDEAI_SERVER_PREFIX = "claude.ai "
+_INVALID_NAME_CHARS = re.compile(r"[^a-zA-Z0-9_-]")
+
+
+def normalize_mcp_name(name: str) -> str:
+    """Make a server/tool name fit the API pattern ``^[a-zA-Z0-9_-]{1,64}$``.
+
+    Mirrors Claude Code's ``normalizeNameForMCP``: invalid characters (spaces,
+    dots, slashes, …) become underscores. For claude.ai servers, repeated and
+    edge underscores are also collapsed so they don't clash with the ``__``
+    delimiter in the qualified tool name.
+    """
+    normalized = _INVALID_NAME_CHARS.sub("_", name)
+    if name.startswith(_CLAUDEAI_SERVER_PREFIX):
+        normalized = re.sub(r"_+", "_", normalized).strip("_")
+    return normalized
 
 
 class MCPTool(Tool):
     reads_raw_args = True
 
     def __init__(self, server_name: str, session: Any, spec: Any) -> None:
-        self.name = f"mcp__{server_name}__{spec.name}"
+        # Advertised/permission name is normalized (must be a valid function
+        # name and align with mcp__<server>__<tool> rules); the raw tool name is
+        # kept for the actual call_tool.
+        self.name = f"mcp__{normalize_mcp_name(server_name)}__{normalize_mcp_name(spec.name)}"
         self.description = spec.description or ""
         self._session = session
         self._raw_name = spec.name
