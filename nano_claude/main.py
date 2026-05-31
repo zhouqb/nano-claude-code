@@ -18,12 +18,13 @@ from rich.table import Table
 
 from nano_claude.agent.loop import LoopCallbacks, query_loop
 from nano_claude.agent.types import AgentConfig, LoopState, StopReason, TokenUsage
+from nano_claude.commands import format_cost, format_help, format_model
 from nano_claude.compaction.compactor import compact_conversation
 from nano_claude.context import build_system_prompt
 from nano_claude.extensibility.hooks import HookEvent, execute_hooks
 from nano_claude.extensibility.loader import load_extensions
 from nano_claude.extensibility.mcp import close_mcp
-from nano_claude.extensibility.skills import SkillContext, dispatch_skill
+from nano_claude.extensibility.skills import SKILL_REGISTRY, SkillContext, dispatch_skill
 from nano_claude.permissions.modes import PermissionMode
 from nano_claude.permissions.prompt import make_cli_prompter
 from nano_claude.permissions.settings import Settings
@@ -36,7 +37,7 @@ from nano_claude.session.restore import (
     restore_read_file_state,
 )
 from nano_claude.session.storage import SessionStorage, new_session_id, session_file
-from nano_claude.subagents import load_agents
+from nano_claude.subagents import AGENT_REGISTRY, load_agents
 from nano_claude.tools.base import ToolResult
 
 DEFAULT_MODEL = os.environ.get("NANO_CLAUDE_MODEL", "anthropic/claude-sonnet-4-6")
@@ -202,7 +203,7 @@ async def _repl(config: AgentConfig, settings: Settings, state: LoopState) -> No
         f"[bold cyan]nano-claude-code[/bold cyan] [dim]({config.model}, "
         f"mode={config.permission_mode.value}, session={storage.session_id})[/dim]"
     )
-    console.print("[dim]Type your message. /quit or Ctrl-D to exit.[/dim]\n")
+    console.print("[dim]Type your message. /help for commands, /quit or Ctrl-D to exit.[/dim]\n")
 
     # Wire all extensions inside the event loop (same task as close_mcp, so the
     # MCP SDK's cancel scopes stay in one task): hooks, skills, MCP, plugins.
@@ -243,6 +244,15 @@ async def _repl(config: AgentConfig, settings: Settings, state: LoopState) -> No
                 storage = _reset_state_for_clear(state, config)
                 await storage.flush()
                 console.print(f"[dim]Conversation cleared. New session: {storage.session_id}[/dim]")
+                continue
+            if user_input in ("/help", "/?"):
+                console.print(format_help(SKILL_REGISTRY, AGENT_REGISTRY))
+                continue
+            if user_input == "/cost":
+                console.print(format_cost(state.token_usage, config.model))
+                continue
+            if user_input == "/model":
+                console.print(format_model(config.model, config.context_window))
                 continue
             if user_input == "/init":
                 console.print("[dim]Analyzing codebase to initialize CLAUDE.md...[/dim]")
