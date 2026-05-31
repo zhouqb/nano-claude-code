@@ -145,10 +145,15 @@ async def _resolve_call(
     except json.JSONDecodeError as exc:
         return _CallPlan(fixed_content=f"Error: tool arguments were not valid JSON: {exc}")
 
-    try:
-        args_model = tool.input_schema.model_validate(parsed)
-    except ValidationError as exc:
-        return _CallPlan(fixed_content=f"Error: invalid arguments for {name}: {exc}")
+    # MCP tools carry raw JSON Schema and receive the arg dict directly; built-in
+    # tools validate against their Pydantic model first.
+    if tool.reads_raw_args:
+        args_model: Any = parsed
+    else:
+        try:
+            args_model = tool.input_schema.model_validate(parsed)
+        except ValidationError as exc:
+            return _CallPlan(fixed_content=f"Error: invalid arguments for {name}: {exc}")
 
     decision = await has_permission_to_use_tool(tool, args_model, context, settings, prompter)
     if decision.behavior != "allow":
