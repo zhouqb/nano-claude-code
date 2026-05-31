@@ -10,6 +10,7 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from nano_claude.extensibility.hooks.types import HookDefinition
 from nano_claude.permissions.modes import PermissionMode
 from nano_claude.permissions.rules import PermissionRule
 
@@ -19,11 +20,25 @@ DEFAULT_SETTINGS_PATH = Path.home() / ".nano-claude" / "settings.json"
 DEFAULT_ALLOW_PATTERNS = ["Read", "GlobTool", "Grep"]
 
 
+def _parse_hooks(raw: object) -> list[HookDefinition]:
+    """Parse the ``"hooks"`` list, skipping malformed entries."""
+    if not isinstance(raw, list):
+        return []
+    hooks: list[HookDefinition] = []
+    for entry in raw:
+        try:
+            hooks.append(HookDefinition.model_validate(entry))
+        except Exception:  # noqa: BLE001 - one bad hook must not break startup
+            continue
+    return hooks
+
+
 @dataclass
 class Settings:
     permission_mode: PermissionMode = PermissionMode.DEFAULT
     allow_rules: list[PermissionRule] = field(default_factory=list)
     deny_rules: list[PermissionRule] = field(default_factory=list)
+    hooks: list[HookDefinition] = field(default_factory=list)
     path: Path | None = None
 
     @classmethod
@@ -48,6 +63,7 @@ class Settings:
             permission_mode=mode,
             allow_rules=[PermissionRule(p, "allow") for p in data.get("alwaysAllowRules", [])],
             deny_rules=[PermissionRule(p, "deny") for p in data.get("alwaysDenyRules", [])],
+            hooks=_parse_hooks(data.get("hooks", [])),
             path=path,
         )
 
