@@ -9,6 +9,7 @@ from nano_claude.commands import (
     format_cost,
     format_help,
     format_model,
+    format_turn_footer,
 )
 from nano_claude.extensibility.skills.types import SkillDefinition
 from nano_claude.subagents.types import AgentDefinition
@@ -80,3 +81,20 @@ def test_model_shows_name_and_window():
     text = format_model("anthropic/claude-sonnet-4-6", 200_000)
     assert "anthropic/claude-sonnet-4-6" in text
     assert "200,000" in text
+
+
+# --- turn footer ------------------------------------------------------------
+
+
+def test_turn_footer_shows_total_and_cost():
+    usage = TokenUsage(input_tokens=1000, output_tokens=500)
+    text = format_turn_footer(usage, "anthropic/claude-sonnet-4-6")
+    assert "1,500 tokens" in text
+    assert "$" in text
+
+
+def test_turn_footer_omits_cost_for_unknown_model():
+    usage = TokenUsage(input_tokens=10, output_tokens=5)
+    text = format_turn_footer(usage, "totally/made-up-model-xyz")
+    assert "15 tokens" in text
+    assert "$" not in text
