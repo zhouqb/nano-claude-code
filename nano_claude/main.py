@@ -16,9 +16,9 @@ from prompt_toolkit.patch_stdout import patch_stdout
 from rich.console import Console
 from rich.table import Table
 
-from nano_claude.agent.loop import LoopCallbacks, query_loop
+from nano_claude.agent.loop import query_loop
 from nano_claude.agent.types import AgentConfig, LoopState, StopReason, TokenUsage
-from nano_claude.commands import format_cost, format_help, format_model
+from nano_claude.commands import format_cost, format_help, format_model, format_turn_footer
 from nano_claude.compaction.compactor import compact_conversation
 from nano_claude.context import build_system_prompt
 from nano_claude.extensibility.hooks import HookEvent, execute_hooks
@@ -38,7 +38,7 @@ from nano_claude.session.restore import (
 )
 from nano_claude.session.storage import SessionStorage, new_session_id, session_file
 from nano_claude.subagents import AGENT_REGISTRY, load_agents
-from nano_claude.tools.base import ToolResult
+from nano_claude.ui import ReplUI
 
 DEFAULT_MODEL = os.environ.get("NANO_CLAUDE_MODEL", "anthropic/claude-sonnet-4-6")
 
@@ -77,77 +77,6 @@ def _resolve_context_window(model: str, fallback: int) -> int:
         return fallback
     window = (info or {}).get("max_input_tokens") or (info or {}).get("max_tokens")
     return int(window) if window else fallback
-
-
-def _summarize_args(args: dict) -> str:
-    for key in ("command", "file_path", "pattern", "path"):
-        if key in args and args[key]:
-            return str(args[key])
-    return ", ".join(f"{k}={v!r}" for k, v in list(args.items())[:2])
-
-
-def _make_callbacks() -> LoopCallbacks:
-    state = {"streaming": False}
-
-    def on_assistant_start() -> None:
-        console.print("[bold green]assistant[/bold green]")
-        state["streaming"] = True
-
-    def on_text(delta: str) -> None:
-        console.print(delta, end="", markup=False, highlight=False)
-
-    def _end_stream() -> None:
-        if state["streaming"]:
-            console.print()
-            state["streaming"] = False
-
-    def on_tool_start(name: str, args: dict) -> None:
-        _end_stream()
-        console.print(f"[cyan]⚙ {name}[/cyan]([dim]{_summarize_args(args)}[/dim])")
-
-    def on_tool_end(name: str, result: ToolResult) -> None:
-        style = "red" if result.is_error else "dim"
-        preview = result.output.strip().splitlines()
-        head = preview[0] if preview else ""
-        more = f" (+{len(preview) - 1} more lines)" if len(preview) > 1 else ""
-        console.print(f"  [{style}]{head}{more}[/{style}]")
-
-    def on_tool_denied(name: str, reason: str) -> None:
-        _end_stream()
-        console.print(f"[yellow]✗ {name} denied[/yellow] [dim]({reason})[/dim]")
-
-    def on_compact() -> None:
-        _end_stream()
-        console.print("[dim]⤢ Context auto-compacted.[/dim]")
-
-    def on_compact_disabled() -> None:
-        _end_stream()
-        console.print("[red]Auto-compact disabled after repeated failures.[/red]")
-
-    def on_context_warning() -> None:
-        _end_stream()
-        console.print("[yellow]Context nearing limit.[/yellow]")
-
-    def on_snip(removed: int) -> None:
-        _end_stream()
-        console.print(f"[dim]✂ Snipped {removed} stale message(s).[/dim]")
-
-    def on_collapse() -> None:
-        _end_stream()
-        console.print("[dim]⊟ Collapsed earlier read/search activity.[/dim]")
-
-    return LoopCallbacks(
-        on_text=on_text,
-        on_assistant_start=on_assistant_start,
-        on_tool_start=on_tool_start,
-        on_tool_end=on_tool_end,
-        on_tool_denied=on_tool_denied,
-        on_compact=on_compact,
-        on_compact_disabled=on_compact_disabled,
-        on_context_warning=on_context_warning,
-        on_snip=on_snip,
-        on_collapse=on_collapse,
-    )
 
 
 def _pick_session(cwd: str):
@@ -198,6 +127,7 @@ async def _repl(config: AgentConfig, settings: Settings, state: LoopState) -> No
     session: PromptSession = PromptSession()
     prompter = make_cli_prompter(session)
     storage = state.storage
+    ui = ReplUI(console)
 
     console.print(
         f"[bold cyan]nano-claude-code[/bold cyan] [dim]({config.model}, "
@@ -281,13 +211,14 @@ async def _repl(config: AgentConfig, settings: Settings, state: LoopState) -> No
                     config,
                     settings=settings,
                     prompter=prompter,
-                    callbacks=_make_callbacks(),
+                    callbacks=ui.callbacks(),
                     allowed_tools=allowed_tools,
                 )
             except Exception as exc:  # noqa: BLE001 - surface any provider error to the user
                 console.print(f"\n[red]Error:[/red] {exc}")
                 continue
             finally:
+                ui.finish_turn()
                 await storage.flush()
 
             if result.reason is StopReason.COMPLETED:
@@ -302,6 +233,7 @@ async def _repl(config: AgentConfig, settings: Settings, state: LoopState) -> No
                 console.print("[yellow]Reached max turns.[/yellow]")
             elif result.reason is StopReason.BLOCKED:
                 console.print(f"[yellow]{result.final_text}[/yellow]")
+            console.print(format_turn_footer(state.token_usage, config.model))
     finally:
         await storage.flush()
         await close_mcp()

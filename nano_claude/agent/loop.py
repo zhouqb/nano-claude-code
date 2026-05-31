@@ -49,6 +49,10 @@ class LoopCallbacks:
     """Optional display hooks; the REPL wires these to rich output."""
 
     on_text: TextCallback | None = None
+    # Fired right before each model request — the REPL shows a spinner until the
+    # first token or tool call arrives. Subagents pass no callbacks, so they're
+    # silent here.
+    on_request_start: Callable[[], None] | None = None
     on_assistant_start: Callable[[], None] | None = None
     on_tool_start: Callable[[str, dict], None] | None = None
     on_tool_end: Callable[[str, ToolResult], None] | None = None
@@ -278,6 +282,9 @@ async def query_loop(
         tool_calls: list[dict] = []
         last_chunk = None
         started = False
+
+        if callbacks.on_request_start:
+            callbacks.on_request_start()
 
         response = await _call_with_retry(
             lambda v=view: litellm.acompletion(

@@ -88,3 +88,12 @@ def format_cost(usage: TokenUsage, model: str) -> str:
 def format_model(model: str, context_window: int) -> str:
     """Render the /model summary."""
     return f"[bold]Model[/bold] {model}\n  Context window: {context_window:,} tokens"
+
+
+def format_turn_footer(usage: TokenUsage, model: str) -> str:
+    """A compact one-line running total shown after each turn."""
+    cost = estimate_cost(usage, model)
+    parts = [f"{usage.total:,} tokens"]
+    if cost is not None:
+        parts.append(f"${cost:.4f}")
+    return "[dim]· " + " · ".join(parts) + "[/dim]"
