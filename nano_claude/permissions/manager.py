@@ -49,12 +49,13 @@ def apply_mode_transform(
 
 async def has_permission_to_use_tool(
     tool: Tool,
-    args: BaseModel,
+    args: BaseModel | dict,
     context: ToolContext,
     settings: Settings,
     prompter: Prompter,
 ) -> PermissionDecision:
-    args_dict = args.model_dump()
+    # MCP tools pass a raw dict; built-ins pass a Pydantic model.
+    args_dict = args.model_dump() if isinstance(args, BaseModel) else dict(args)
 
     deny = first_match(settings.deny_rules, tool.name, args_dict)
     if deny is not None:

@@ -21,6 +21,7 @@ from nano_claude.agent.types import AgentConfig, LoopState, StopReason, TokenUsa
 from nano_claude.compaction.compactor import compact_conversation
 from nano_claude.context import build_system_prompt
 from nano_claude.extensibility.hooks import HookEvent, execute_hooks, register_hooks
+from nano_claude.extensibility.mcp import close_mcp, load_mcp_servers
 from nano_claude.extensibility.skills import SkillContext, dispatch_skill, load_skills
 from nano_claude.permissions.modes import PermissionMode
 from nano_claude.permissions.prompt import make_cli_prompter
@@ -35,6 +36,7 @@ from nano_claude.session.restore import (
 )
 from nano_claude.session.storage import SessionStorage, new_session_id, session_file
 from nano_claude.tools.base import ToolResult
+from nano_claude.tools.registry import register_tools
 
 DEFAULT_MODEL = os.environ.get("NANO_CLAUDE_MODEL", "anthropic/claude-sonnet-4-6")
 
@@ -201,6 +203,14 @@ async def _repl(config: AgentConfig, settings: Settings, state: LoopState) -> No
     )
     console.print("[dim]Type your message. /quit or Ctrl-D to exit.[/dim]\n")
 
+    # Connect MCP servers inside the event loop (same task as close_mcp, so the
+    # SDK's cancel scopes stay in one task) and register their tools.
+    if settings.mcp_servers:
+        mcp_tools = await load_mcp_servers(settings.mcp_servers)
+        if mcp_tools:
+            register_tools(mcp_tools)
+            console.print(f"[dim]Connected {len(mcp_tools)} MCP tool(s).[/dim]")
+
     await _fire_session_start(config, state)
 
     try:
@@ -282,6 +292,7 @@ async def _repl(config: AgentConfig, settings: Settings, state: LoopState) -> No
                 console.print(f"[yellow]{result.final_text}[/yellow]")
     finally:
         await storage.flush()
+        await close_mcp()
         console.print("[dim]Session saved. Resume with `nano-claude --resume`.[/dim]")
 
 

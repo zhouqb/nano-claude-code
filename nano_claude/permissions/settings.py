@@ -44,6 +44,7 @@ class Settings:
     allow_rules: list[PermissionRule] = field(default_factory=list)
     deny_rules: list[PermissionRule] = field(default_factory=list)
     hooks: list[HookDefinition] = field(default_factory=list)
+    mcp_servers: dict[str, dict] = field(default_factory=dict)
     path: Path | None = None
     # Unrecognized settings.json keys, preserved across save() so a persisted
     # permission decision can't silently wipe hooks/mcpServers/etc.
@@ -72,6 +73,9 @@ class Settings:
             allow_rules=[PermissionRule(p, "allow") for p in data.get("alwaysAllowRules", [])],
             deny_rules=[PermissionRule(p, "deny") for p in data.get("alwaysDenyRules", [])],
             hooks=_parse_hooks(data.get("hooks", [])),
+            mcp_servers=data.get("mcpServers", {})
+            if isinstance(data.get("mcpServers"), dict)
+            else {},
             extra={k: v for k, v in data.items() if k not in _MANAGED_KEYS},
             path=path,
         )

@@ -64,6 +64,10 @@ class Tool(ABC):
     name: str
     description: str
     input_schema: type[BaseModel]
+    # MCP tools carry a raw JSON Schema instead of a Pydantic model and receive
+    # ``dict`` args. When True, the loop skips Pydantic validation and passes the
+    # raw arg dict straight to ``call``/``check_permissions``.
+    reads_raw_args: bool = False
 
     @abstractmethod
     async def call(self, args: BaseModel, context: ToolContext) -> ToolResult: ...

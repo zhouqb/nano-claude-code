@@ -20,15 +20,27 @@ BASE_TOOLS: list[Tool] = [
     GrepTool(),
 ]
 
+# MCP- and plugin-contributed tools, registered at startup.
+_DYNAMIC_TOOLS: list[Tool] = []
+
+
+def register_tools(tools: list[Tool]) -> None:
+    """Append externally-provided tools (MCP servers, plugins) to the registry."""
+    _DYNAMIC_TOOLS.extend(tools)
+
+
+def clear_dynamic_tools() -> None:
+    _DYNAMIC_TOOLS.clear()
+
 
 def get_tools(permission_mode: PermissionMode) -> list[Tool]:
     """Return the tools available for a given mode.
 
-    Phase 2 exposes the same set regardless of mode; plugin-contributed tools
-    will be merged here in a later phase.
+    The same set is exposed regardless of mode; dynamic (MCP/plugin) tools are
+    appended so they are indistinguishable from built-ins downstream.
     """
-    return BASE_TOOLS
+    return BASE_TOOLS + _DYNAMIC_TOOLS
 
 
 def get_tool(name: str) -> Tool | None:
-    return next((t for t in BASE_TOOLS if t.name == name), None)
+    return next((t for t in BASE_TOOLS + _DYNAMIC_TOOLS if t.name == name), None)
