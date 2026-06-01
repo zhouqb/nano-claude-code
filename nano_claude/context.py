@@ -1,7 +1,8 @@
 """System prompt assembly.
 
-Phase 1 keeps this minimal: identity + environment block (OS, shell, cwd, git,
-date). Later phases extend it with tool guidance, CLAUDE.md, and memory.
+Identity + environment block (OS, shell, cwd, git, date), the project's
+CLAUDE.md, and — when memory is enabled (Phase 8) — the memory section with the
+always-loaded MEMORY.md index.
 """
 
 from __future__ import annotations
@@ -11,6 +12,9 @@ import platform
 import subprocess
 from datetime import date
 from pathlib import Path
+
+from nano_claude.memory.paths import is_memory_enabled, memory_dir
+from nano_claude.memory.prompt import build_memory_section
 
 IDENTITY = (
     "You are nano-claude-code, a minimal command-line coding assistant. "
@@ -70,7 +74,7 @@ def build_environment_block(cwd: str | None = None) -> str:
     return "\n".join(lines)
 
 
-def build_system_prompt(cwd: str | None = None) -> str:
+def build_system_prompt(cwd: str | None = None, settings: object | None = None) -> str:
     cwd = cwd or os.getcwd()
     parts = [IDENTITY, build_environment_block(cwd)]
     claude_md = _read_project_instructions(cwd)
@@ -79,6 +83,10 @@ def build_system_prompt(cwd: str | None = None) -> str:
             "The following project instructions come from CLAUDE.md and must be "
             "followed:\n\n" + claude_md
         )
+    # Memory is opt-in per session: included only when settings are supplied and
+    # the gate is on. With no settings (e.g. in unit tests) it stays out.
+    if settings is not None and is_memory_enabled(settings):
+        parts.append(build_memory_section(memory_dir(cwd, settings)))
     return "\n\n".join(parts)
 
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from nano_claude.agent.types import AgentConfig, LoopState, TokenUsage
 from nano_claude.main import INIT_PROMPT, _reset_state_for_clear
+from nano_claude.permissions.settings import Settings
 
 
 def test_init_prompt_targets_claude_md():
@@ -17,7 +18,9 @@ def test_init_prompt_discourages_generic_content():
     assert "Don't include generic development practices" in INIT_PROMPT
 
 
-def test_reset_state_for_clear_starts_fresh_session(tmp_path):
+def test_reset_state_for_clear_starts_fresh_session(tmp_path, monkeypatch):
+    # Sandbox memory so the rebuilt system prompt doesn't touch the real ~/.nano-claude.
+    monkeypatch.setenv("NANO_CLAUDE_MEMORY_DIR", str(tmp_path / "mem"))
     old_storage = object()
     state = LoopState(
         messages=[{"role": "user", "content": "old"}],
@@ -32,7 +35,9 @@ def test_reset_state_for_clear_starts_fresh_session(tmp_path):
         read_file_state={"x": object()},
     )
 
-    storage = _reset_state_for_clear(state, AgentConfig(cwd=str(tmp_path), model="test-model"))
+    storage = _reset_state_for_clear(
+        state, AgentConfig(cwd=str(tmp_path), model="test-model"), Settings()
+    )
 
     assert storage is state.storage
     assert storage is not old_storage
