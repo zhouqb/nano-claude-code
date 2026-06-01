@@ -19,11 +19,13 @@ from nano_claude.agent.types import AgentConfig, LoopState
 from nano_claude.memory.scan import format_manifest, scan_memory_files
 from nano_claude.permissions.settings import Settings
 from nano_claude.tools.base import PermissionDecision, Tool, ToolContext
+from nano_claude.tools.bash import is_read_only
 
 EXTRACT_MAX_TURNS = 5
 READ_ONLY_TOOLS = frozenset({"Read", "Grep", "GlobTool"})
 WRITE_TOOLS = frozenset({"Write", "Edit"})
-EXTRACT_TOOLS = sorted(READ_ONLY_TOOLS | WRITE_TOOLS)
+# Bash is permitted, but only for read-only commands (see the gate below).
+EXTRACT_TOOLS = sorted(READ_ONLY_TOOLS | WRITE_TOOLS | {"Bash"})
 
 EXTRACT_SYSTEM = (
     "You are a memory-extraction agent. Review the conversation excerpt and the "
@@ -66,6 +68,15 @@ def create_memory_can_use_tool(mdir: Path):
                 return PermissionDecision(behavior="allow")
             return PermissionDecision(
                 behavior="deny", reason="extraction may only write inside the memory directory"
+            )
+        if tool.name == "Bash":
+            command = (
+                args.get("command") if isinstance(args, dict) else getattr(args, "command", "")
+            )
+            if command and is_read_only(command):
+                return PermissionDecision(behavior="allow")
+            return PermissionDecision(
+                behavior="deny", reason="extraction may only run read-only Bash commands"
             )
         return PermissionDecision(
             behavior="deny", reason=f"{tool.name} is not permitted during memory extraction"

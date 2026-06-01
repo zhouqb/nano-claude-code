@@ -46,9 +46,21 @@ async def test_gate_denies_write_outside_mdir(tmp_path):
     assert decision.behavior == "deny"
 
 
+async def test_gate_allows_read_only_bash(tmp_path):
+    gate = create_memory_can_use_tool(tmp_path)
+    assert (await gate(_tool("Bash"), {"command": "ls -la"}, None)).behavior == "allow"
+    assert (await gate(_tool("Bash"), {"command": "git log --oneline"}, None)).behavior == "allow"
+
+
+async def test_gate_denies_write_capable_bash(tmp_path):
+    gate = create_memory_can_use_tool(tmp_path)
+    assert (await gate(_tool("Bash"), {"command": "echo hi > /tmp/x"}, None)).behavior == "deny"
+    assert (await gate(_tool("Bash"), {"command": "rm -rf foo"}, None)).behavior == "deny"
+
+
 async def test_gate_denies_other_tools(tmp_path):
     gate = create_memory_can_use_tool(tmp_path)
-    for name in ("Bash", "Task", "mcp__x__y"):
+    for name in ("Task", "mcp__x__y"):
         assert (await gate(_tool(name), {}, None)).behavior == "deny"
 
 
