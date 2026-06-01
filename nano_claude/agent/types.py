@@ -77,6 +77,10 @@ class AgentConfig:
     microcompact_gap_minutes: int = 60
     context_window: int = 200_000  # overridden at startup from litellm.get_model_info()
     cwd: str = field(default_factory=os.getcwd)  # working directory for tool execution
+    # Side-query model for memory relevance recall (Phase 8). Prefer a strong
+    # Sonnet-class model — selection quality matters more than cost. None falls
+    # back to ``model``.
+    recall_model: str | None = None
 
 
 @dataclass
