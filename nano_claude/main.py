@@ -18,7 +18,15 @@ from rich.table import Table
 
 from nano_claude.agent.loop import query_loop
 from nano_claude.agent.types import AgentConfig, LoopState, StopReason, TokenUsage
-from nano_claude.commands import format_cost, format_help, format_model, format_turn_footer
+from nano_claude.commands import (
+    forget_directive,
+    format_cost,
+    format_help,
+    format_memory,
+    format_model,
+    format_turn_footer,
+    remember_directive,
+)
 from nano_claude.compaction.compactor import compact_conversation
 from nano_claude.context import build_system_prompt
 from nano_claude.extensibility.hooks import HookEvent, execute_hooks
@@ -209,6 +217,23 @@ async def _repl(config: AgentConfig, settings: Settings, state: LoopState) -> No
             if user_input == "/model":
                 console.print(format_model(config.model, config.context_window))
                 continue
+            if user_input == "/memory":
+                mdir = memory_dir(config.cwd, settings) if is_memory_enabled(settings) else None
+                console.print(format_memory(mdir))
+                continue
+            if user_input.split(" ", 1)[0] in ("/remember", "/forget"):
+                verb, _, rest = user_input.partition(" ")
+                rest = rest.strip()
+                if not is_memory_enabled(settings):
+                    console.print("[yellow]Memory is disabled for this session.[/yellow]")
+                    continue
+                if not rest:
+                    console.print(f"[dim]Usage: {verb} <text>[/dim]")
+                    continue
+                # Route through the agent so it saves/deletes via its own tools.
+                user_input = (
+                    remember_directive(rest) if verb == "/remember" else forget_directive(rest)
+                )
             if user_input == "/init":
                 console.print("[dim]Analyzing codebase to initialize CLAUDE.md...[/dim]")
                 user_input = INIT_PROMPT
