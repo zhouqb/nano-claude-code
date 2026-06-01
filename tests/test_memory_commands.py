@@ -6,8 +6,11 @@ from nano_claude.commands import (
     BUILTIN_COMMANDS,
     forget_directive,
     format_memory,
+    memory_target_path,
+    open_memory_file,
     remember_directive,
 )
+from nano_claude.memory.paths import ENTRYPOINT
 from nano_claude.memory.store import add_index_pointer, write_memory
 
 
@@ -45,3 +48,32 @@ def test_forget_directive_includes_topic_and_pointer():
     directive = forget_directive("deploy schedule")
     assert "deploy schedule" in directive
     assert "MEMORY.md" in directive
+
+
+# --- /memory <file> editor open ---------------------------------------------
+
+
+def test_memory_target_defaults_to_index(tmp_path):
+    assert memory_target_path(tmp_path, "") == tmp_path / ENTRYPOINT
+
+
+def test_memory_target_adds_md_suffix(tmp_path):
+    assert memory_target_path(tmp_path, "deploy") == tmp_path / "deploy.md"
+    assert memory_target_path(tmp_path, "deploy.md") == tmp_path / "deploy.md"
+
+
+def test_memory_target_cannot_escape_dir(tmp_path):
+    # Directory components are stripped, so the target stays inside mdir.
+    assert memory_target_path(tmp_path, "../../etc/passwd").parent == tmp_path
+
+
+def test_open_memory_file_creates_and_invokes_editor(tmp_path):
+    opened: dict = {}
+
+    def fake_editor(*, filename):
+        opened["filename"] = filename
+
+    target = open_memory_file(tmp_path, "deploy", editor=fake_editor)
+    assert target == tmp_path / "deploy.md"
+    assert target.exists()  # pre-created so the editor opens a real file
+    assert opened["filename"] == str(target)

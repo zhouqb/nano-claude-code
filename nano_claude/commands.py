@@ -12,6 +12,7 @@ from pathlib import Path
 
 from nano_claude.agent.types import TokenUsage
 from nano_claude.extensibility.skills.types import SkillDefinition
+from nano_claude.memory.paths import ENTRYPOINT
 from nano_claude.memory.scan import scan_memory_files
 from nano_claude.subagents.types import AgentDefinition
 
@@ -23,7 +24,7 @@ BUILTIN_COMMANDS: list[tuple[str, str]] = [
     ("/model", "Show the current model and context window."),
     ("/compact", "Summarize the conversation so far to free up context."),
     ("/clear", "Clear the conversation and start a fresh session."),
-    ("/memory", "List saved memories and where they live."),
+    ("/memory", "List memories; /memory <file> opens it in $EDITOR."),
     ("/remember", "Save a fact to memory (e.g. /remember we deploy on Fridays)."),
     ("/forget", "Delete a memory by topic (e.g. /forget deploy schedule)."),
     ("/init", "Analyze the codebase and draft a CLAUDE.md."),
@@ -45,8 +46,41 @@ def format_memory(mdir: Path | None) -> str:
             tag = f"[{h.type}] " if h.type else ""
             desc = h.description or ""
             lines.append(f"  [cyan]{h.filename.ljust(width)}[/cyan]  [dim]{tag}[/dim]{desc}")
-    lines.append("[dim]Edit files directly there, or use /remember and /forget.[/dim]")
+    lines.append(
+        "[dim]Open one with /memory <file> (creates it if missing), or use /remember.[/dim]"
+    )
     return "\n".join(lines)
+
+
+def memory_target_path(mdir: Path, arg: str) -> Path:
+    """The file ``/memory [arg]`` edits: a named topic file, else the index.
+
+    The argument is reduced to a bare filename (any directory parts stripped) and
+    given a ``.md`` suffix, so it can never escape the memory directory.
+    """
+    name = arg.strip()
+    if not name:
+        return mdir / ENTRYPOINT
+    safe = Path(name).name
+    if not safe.endswith(".md"):
+        safe += ".md"
+    return mdir / safe
+
+
+def open_memory_file(mdir: Path, arg: str, *, editor=None) -> Path:
+    """Open (creating if needed) a memory file in the user's editor.
+
+    ``editor`` defaults to ``click.edit`` and is injectable for testing. Returns
+    the resolved target path.
+    """
+    if editor is None:
+        from click import edit as editor
+    target = memory_target_path(mdir, arg)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if not target.exists():
+        target.write_text("", encoding="utf-8")  # so the editor opens a real file
+    editor(filename=str(target))
+    return target
 
 
 def remember_directive(text: str) -> str:

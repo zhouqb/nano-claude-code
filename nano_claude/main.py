@@ -25,6 +25,7 @@ from nano_claude.commands import (
     format_memory,
     format_model,
     format_turn_footer,
+    open_memory_file,
     remember_directive,
 )
 from nano_claude.compaction.compactor import compact_conversation
@@ -217,9 +218,25 @@ async def _repl(config: AgentConfig, settings: Settings, state: LoopState) -> No
             if user_input == "/model":
                 console.print(format_model(config.model, config.context_window))
                 continue
-            if user_input == "/memory":
-                mdir = memory_dir(config.cwd, settings) if is_memory_enabled(settings) else None
-                console.print(format_memory(mdir))
+            if user_input.split(" ", 1)[0] == "/memory":
+                if not is_memory_enabled(settings):
+                    console.print(format_memory(None))
+                    continue
+                mdir = memory_dir(config.cwd, settings)
+                _, _, target = user_input.partition(" ")
+                target = target.strip()
+                if not target:
+                    console.print(format_memory(mdir))
+                    continue
+                try:
+                    # Editor launch is blocking; off-thread so the loop stays responsive.
+                    opened = await asyncio.to_thread(open_memory_file, mdir, target)
+                    console.print(f"[dim]Opened {opened.name} in your editor.[/dim]")
+                except Exception as exc:  # noqa: BLE001 - no editor / launch failure
+                    console.print(
+                        f"[yellow]Could not open an editor ({exc}). "
+                        f"File: {memory_dir(config.cwd, settings)}[/yellow]"
+                    )
                 continue
             if user_input.split(" ", 1)[0] in ("/remember", "/forget"):
                 verb, _, rest = user_input.partition(" ")
