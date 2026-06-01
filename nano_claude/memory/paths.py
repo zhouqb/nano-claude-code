@@ -15,6 +15,7 @@ This mirrors ``src/memdir/paths.ts`` in the Claude Code source.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -50,10 +51,12 @@ def is_memory_enabled(settings: object | None = None) -> bool:
 def validate_memory_path(raw: str | None) -> Path | None:
     """Normalize and validate a candidate memory-dir override.
 
-    Rejects paths that would be dangerous as a write root: relative paths,
-    root/near-root, and anything with a NUL byte. ``~`` is expanded, but a bare
-    ``~`` / ``~/`` / ``~/..`` (which would resolve to ``$HOME`` or an ancestor)
-    is rejected. Returns the resolved absolute path, or ``None`` if unset/invalid.
+    The memory dir is a read/write trust boundary, so we reject anything that
+    isn't a concrete local directory: relative paths, root/near-root, NUL bytes,
+    UNC/network roots (``//server/share``, ``\\\\server\\share``), and bare
+    Windows drive-roots (``C:\\``). ``~`` is expanded, but a bare ``~`` / ``~/`` /
+    ``~/..`` (which resolves to ``$HOME`` or an ancestor) is rejected. Returns the
+    resolved absolute path, or ``None`` if unset/invalid.
     """
     if not raw or not raw.strip():
         return None
@@ -66,9 +69,17 @@ def validate_memory_path(raw: str | None) -> Path | None:
         if normalized_rest in (".", ".."):
             return None
         candidate = str(Path.home() / rest)
+    # Reject UNC/network roots before normpath (which can collapse or preserve
+    # the leading double separator depending on platform).
+    if candidate.startswith(("\\\\", "//")):
+        return None
     normalized = os.path.normpath(candidate)
     # Absolute, and not root / a one-char near-root like "/a".
     if not os.path.isabs(normalized) or len(normalized) < 3:
+        return None
+    # Belt-and-suspenders: reject anything that still looks like a UNC root or a
+    # bare Windows drive-root after normalization.
+    if normalized.startswith(("\\\\", "//")) or re.fullmatch(r"[A-Za-z]:[\\/]?", normalized):
         return None
     return Path(normalized)
 

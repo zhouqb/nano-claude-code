@@ -31,7 +31,23 @@ def _init_repo(path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    "bad", ["", "   ", "relative/path", "..", "/", "/a", "~", "~/", "~/..", "a\x00b"]
+    "bad",
+    [
+        "",
+        "   ",
+        "relative/path",
+        "..",
+        "/",
+        "/a",
+        "~",
+        "~/",
+        "~/..",
+        "a\x00b",
+        "//server/share",  # UNC / network root (POSIX-absolute, so the old check let it pass)
+        "\\\\server\\share",  # Windows UNC root
+        "C:\\",  # bare Windows drive-root
+        "C:",
+    ],
 )
 def test_validate_rejects_dangerous_paths(bad):
     assert validate_memory_path(bad) is None
