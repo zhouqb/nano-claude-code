@@ -17,6 +17,11 @@ import frontmatter
 from nano_claude.memory.paths import ENTRYPOINT
 
 MAX_MEMORY_FILES = 200
+# Only the leading lines of each file are read to extract frontmatter during a
+# scan — this runs every turn (recall) and again for extraction, so we never
+# slurp a large accidental memory file here. Full content is read only for the
+# few selected files, in surface_memory_attachment() (with its own caps).
+FRONTMATTER_MAX_LINES = 30
 
 
 @dataclass(frozen=True)
@@ -28,11 +33,30 @@ class MemoryHeader:
     type: str | None
 
 
+def _read_frontmatter_meta(path: Path) -> dict:
+    """Parse frontmatter from only the first ``FRONTMATTER_MAX_LINES`` of a file.
+
+    A memory's frontmatter block is tiny; reading a bounded prefix keeps scans
+    cheap regardless of body size. If the block isn't closed within the prefix
+    (or there is none), the metadata is simply empty.
+    """
+    lines: list[str] = []
+    with path.open(encoding="utf-8") as f:
+        for i, line in enumerate(f):
+            if i >= FRONTMATTER_MAX_LINES:
+                break
+            lines.append(line)
+    try:
+        return frontmatter.loads("".join(lines)).metadata
+    except Exception:  # noqa: BLE001 - malformed frontmatter → treat as none
+        return {}
+
+
 def scan_memory_files(mdir: Path) -> list[MemoryHeader]:
     """Return frontmatter headers for every ``*.md`` (except ``MEMORY.md``).
 
-    Sorted newest-first and capped at :data:`MAX_MEMORY_FILES`. Unreadable or
-    malformed files are skipped, never fatal.
+    Sorted newest-first and capped at :data:`MAX_MEMORY_FILES`. Only a bounded
+    frontmatter prefix is read per file. Unreadable files are skipped, never fatal.
     """
     if not mdir.is_dir():
         return []
@@ -42,11 +66,10 @@ def scan_memory_files(mdir: Path) -> list[MemoryHeader]:
         if path.name == ENTRYPOINT or not path.is_file():
             continue
         try:
-            post = frontmatter.load(str(path))
             mtime = path.stat().st_mtime
-        except Exception:  # noqa: BLE001 - one bad file must not break recall
+            meta = _read_frontmatter_meta(path)
+        except OSError:  # one bad file must not break recall
             continue
-        meta = post.metadata
         desc = meta.get("description")
         mtype = meta.get("type")
         headers.append(

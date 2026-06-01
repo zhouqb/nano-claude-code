@@ -78,6 +78,24 @@ def test_manifest_format(tmp_path):
     assert "[project]" in line and "a.md" in line and "desc" in line
 
 
+def test_scan_parses_frontmatter_despite_huge_body(tmp_path):
+    # Small frontmatter, enormous body: the header still parses (and the scan
+    # only reads the leading prefix, never the whole file).
+    write_memory(tmp_path, "big", description="tiny header", type="user", body="x\n" * 50_000)
+    headers = scan_memory_files(tmp_path)
+    assert headers[0].description == "tiny header"
+    assert headers[0].type == "user"
+
+
+def test_scan_ignores_frontmatter_beyond_prefix(tmp_path):
+    # Closing `---` pushed past the bounded prefix: the block isn't seen, so the
+    # header degrades to no description/type rather than reading the whole file.
+    padding = "\n".join(f"x: {i}" for i in range(40))
+    (tmp_path / "wide.md").write_text(f"---\ndescription: deep\n{padding}\n---\nbody\n")
+    header = next(h for h in scan_memory_files(tmp_path) if h.filename == "wide.md")
+    assert header.description is None
+
+
 # --- find_relevant_memories -------------------------------------------------
 
 
