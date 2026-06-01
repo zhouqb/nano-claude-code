@@ -171,7 +171,7 @@ async def _repl(config: AgentConfig, settings: Settings, state: LoopState) -> No
                 continue
             if user_input in ("/clear", "/reset", "/new"):
                 await storage.flush()
-                storage = _reset_state_for_clear(state, config)
+                storage = _reset_state_for_clear(state, config, settings)
                 await storage.flush()
                 console.print(f"[dim]Conversation cleared. New session: {storage.session_id}[/dim]")
                 continue
@@ -240,7 +240,7 @@ async def _repl(config: AgentConfig, settings: Settings, state: LoopState) -> No
         console.print("[dim]Session saved. Resume with `nano-claude --resume`.[/dim]")
 
 
-def _init_state(config: AgentConfig, resume: bool) -> LoopState:
+def _init_state(config: AgentConfig, settings: Settings, resume: bool) -> LoopState:
     """Build the loop state and storage, either fresh or resumed from disk."""
     state = LoopState()
 
@@ -261,19 +261,21 @@ def _init_state(config: AgentConfig, resume: bool) -> LoopState:
     session_id = new_session_id()
     storage = SessionStorage(session_file(config.cwd, session_id), session_id)
     storage.append_metadata(model=config.model, cwd=config.cwd)
-    system_msg = {"role": "system", "content": build_system_prompt(config.cwd)}
+    system_msg = {"role": "system", "content": build_system_prompt(config.cwd, settings)}
     state.messages.append(system_msg)
     storage.append_message(system_msg)
     state.storage = storage
     return state
 
 
-def _reset_state_for_clear(state: LoopState, config: AgentConfig) -> SessionStorage:
+def _reset_state_for_clear(
+    state: LoopState, config: AgentConfig, settings: Settings
+) -> SessionStorage:
     """Start a fresh session after /clear while keeping the current config."""
     session_id = new_session_id()
     storage = SessionStorage(session_file(config.cwd, session_id), session_id)
     storage.append_metadata(model=config.model, cwd=config.cwd)
-    system_msg = {"role": "system", "content": build_system_prompt(config.cwd)}
+    system_msg = {"role": "system", "content": build_system_prompt(config.cwd, settings)}
 
     state.messages = [system_msg]
     state.turn_count = 0
@@ -333,7 +335,7 @@ def cli(
     )
     config.context_window = _resolve_context_window(model, config.context_window)
 
-    state = _init_state(config, resume)
+    state = _init_state(config, settings, resume)
 
     try:
         asyncio.run(_repl(config, settings, state))
