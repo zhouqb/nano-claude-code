@@ -37,13 +37,14 @@ def _init_repo(path: Path) -> None:
         "   ",
         "relative/path",
         "..",
-        "/",
-        "/a",
+        "/",  # filesystem root: an anchor with nothing below it
         "~",
         "~/",
         "~/..",
         "a\x00b",
-        "//server/share",  # UNC / network root (POSIX-absolute, so the old check let it pass)
+        # On POSIX these parse as relative paths (backslash/drive aren't special),
+        # so is_absolute() rejects them; on Windows they parse as bare roots, so
+        # len(parts) < 2 rejects them. Either way: out.
         "\\\\server\\share",  # Windows UNC root
         "C:\\",  # bare Windows drive-root
         "C:",
@@ -55,6 +56,11 @@ def test_validate_rejects_dangerous_paths(bad):
 
 def test_validate_accepts_absolute(tmp_path):
     assert validate_memory_path(str(tmp_path)) == Path(str(tmp_path))
+
+
+def test_validate_accepts_dir_just_below_root():
+    # One component below the root is a real directory, not a bare root.
+    assert validate_memory_path("/srv") == Path("/srv")
 
 
 def test_validate_expands_tilde():

@@ -9,13 +9,13 @@ different repos stay isolated. Resolution order:
 2. ``<root>/projects/<sanitized-git-root>/memory/`` where the git root falls
    back to the project root (cwd) when there is no git repo.
 
-This mirrors ``src/memdir/paths.ts`` in the Claude Code source.
+This loosely mirrors ``src/memdir/paths.ts`` in the Claude Code source; the
+validation here is a pathlib-native simplification of the upstream string checks.
 """
 
 from __future__ import annotations
 
 import os
-import re
 import subprocess
 from pathlib import Path
 
@@ -51,37 +51,33 @@ def is_memory_enabled(settings: object | None = None) -> bool:
 def validate_memory_path(raw: str | None) -> Path | None:
     """Normalize and validate a candidate memory-dir override.
 
-    The memory dir is a read/write trust boundary, so we reject anything that
-    isn't a concrete local directory: relative paths, root/near-root, NUL bytes,
-    UNC/network roots (``//server/share``, ``\\\\server\\share``), and bare
-    Windows drive-roots (``C:\\``). ``~`` is expanded, but a bare ``~`` / ``~/`` /
-    ``~/..`` (which resolves to ``$HOME`` or an ancestor) is rejected. Returns the
-    resolved absolute path, or ``None`` if unset/invalid.
+    The memory dir is a read/write trust boundary, so we accept only a
+    *concrete directory below a root* and reject everything else: NUL bytes,
+    relative paths, and bare roots — the filesystem root ``/``, a Windows drive
+    root ``C:\\``, or a UNC root ``\\\\server\\share``. ``~/...`` is expanded,
+    but a bare ``~`` / ``~/`` / ``~/..`` (which resolves to ``$HOME`` or an
+    ancestor) is rejected.
+
+    Parsing is delegated to :class:`pathlib.Path`, which applies the rules of
+    whichever OS is running: ``is_absolute()`` rejects relative paths, and
+    ``len(parts) >= 2`` requires at least one component beneath the anchor,
+    which is what distinguishes a real directory from a bare root on every
+    platform. Returns the resolved absolute path, or ``None`` if unset/invalid.
     """
     if not raw or not raw.strip():
         return None
     candidate = raw.strip()
     if "\x00" in candidate:
         return None
-    if candidate == "~" or candidate.startswith(("~/", "~\\")):
-        rest = candidate[1:].lstrip("/\\")
-        normalized_rest = os.path.normpath(rest or ".")
-        if normalized_rest in (".", ".."):
+    if candidate == "~" or candidate.startswith("~/"):
+        rest = candidate[2:]  # everything after "~/"
+        if not rest or os.path.normpath(rest) in (".", ".."):
             return None
         candidate = str(Path.home() / rest)
-    # Reject UNC/network roots before normpath (which can collapse or preserve
-    # the leading double separator depending on platform).
-    if candidate.startswith(("\\\\", "//")):
+    path = Path(os.path.normpath(candidate))
+    if not path.is_absolute() or len(path.parts) < 2:
         return None
-    normalized = os.path.normpath(candidate)
-    # Absolute, and not root / a one-char near-root like "/a".
-    if not os.path.isabs(normalized) or len(normalized) < 3:
-        return None
-    # Belt-and-suspenders: reject anything that still looks like a UNC root or a
-    # bare Windows drive-root after normalization.
-    if normalized.startswith(("\\\\", "//")) or re.fullmatch(r"[A-Za-z]:[\\/]?", normalized):
-        return None
-    return Path(normalized)
+    return path
 
 
 def _memory_dir_override(settings: object | None) -> str | None:
