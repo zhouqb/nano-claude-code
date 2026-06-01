@@ -8,8 +8,12 @@ unit-tested without a live session.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from nano_claude.agent.types import TokenUsage
 from nano_claude.extensibility.skills.types import SkillDefinition
+from nano_claude.memory.paths import ENTRYPOINT
+from nano_claude.memory.scan import scan_memory_files
 from nano_claude.subagents.types import AgentDefinition
 
 # (command, description) pairs shown by /help. Skills and agents are listed
@@ -20,9 +24,79 @@ BUILTIN_COMMANDS: list[tuple[str, str]] = [
     ("/model", "Show the current model and context window."),
     ("/compact", "Summarize the conversation so far to free up context."),
     ("/clear", "Clear the conversation and start a fresh session."),
+    ("/memory", "List memories; /memory <file> opens it in $EDITOR."),
+    ("/remember", "Save a fact to memory (e.g. /remember we deploy on Fridays)."),
+    ("/forget", "Delete a memory by topic (e.g. /forget deploy schedule)."),
     ("/init", "Analyze the codebase and draft a CLAUDE.md."),
     ("/quit", "Exit nano-claude-code."),
 ]
+
+
+def format_memory(mdir: Path | None) -> str:
+    """Render the /memory listing: where memory lives and what's saved."""
+    if mdir is None:
+        return "[yellow]Memory is disabled for this session.[/yellow]"
+    headers = scan_memory_files(mdir)
+    lines = [f"[bold]Memory[/bold] [dim]{mdir}[/dim]"]
+    if not headers:
+        lines.append("  [dim](no memories yet)[/dim]")
+    else:
+        width = max(len(h.filename) for h in headers)
+        for h in headers:
+            tag = f"[{h.type}] " if h.type else ""
+            desc = h.description or ""
+            lines.append(f"  [cyan]{h.filename.ljust(width)}[/cyan]  [dim]{tag}[/dim]{desc}")
+    lines.append(
+        "[dim]Open one with /memory <file> (creates it if missing), or use /remember.[/dim]"
+    )
+    return "\n".join(lines)
+
+
+def memory_target_path(mdir: Path, arg: str) -> Path:
+    """The file ``/memory [arg]`` edits: a named topic file, else the index.
+
+    The argument is reduced to a bare filename (any directory parts stripped) and
+    given a ``.md`` suffix, so it can never escape the memory directory.
+    """
+    name = arg.strip()
+    if not name:
+        return mdir / ENTRYPOINT
+    safe = Path(name).name
+    if not safe.endswith(".md"):
+        safe += ".md"
+    return mdir / safe
+
+
+def open_memory_file(mdir: Path, arg: str, *, editor=None) -> Path:
+    """Open (creating if needed) a memory file in the user's editor.
+
+    ``editor`` defaults to ``click.edit`` and is injectable for testing. Returns
+    the resolved target path.
+    """
+    if editor is None:
+        from click import edit as editor
+    target = memory_target_path(mdir, arg)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if not target.exists():
+        target.write_text("", encoding="utf-8")  # so the editor opens a real file
+    editor(filename=str(target))
+    return target
+
+
+def remember_directive(text: str) -> str:
+    """The instruction /remember hands to the agent to save a fact itself."""
+    return (
+        "Save the following to your memory as the most appropriate type "
+        f"(user / feedback / project / reference), then confirm in one line:\n\n{text}"
+    )
+
+
+def forget_directive(topic: str) -> str:
+    """The instruction /forget hands to the agent to remove a memory."""
+    return (
+        f"Find the memory about '{topic}' and delete it — remove both the topic "
+        "file and its MEMORY.md pointer. If nothing matches, say so instead."
+    )
 
 
 def format_help(
