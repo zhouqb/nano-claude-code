@@ -5,9 +5,11 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+import pytest
+
 from nano_claude.permissions.modes import PermissionMode
 from nano_claude.tools.base import ToolContext
-from nano_claude.tools.bash import BashInput, BashTool, is_dangerous
+from nano_claude.tools.bash import BashInput, BashTool, is_dangerous, is_read_only
 from nano_claude.tools.edit import EditInput, EditTool
 from nano_claude.tools.glob_tool import GlobInput, GlobTool
 from nano_claude.tools.grep import GrepInput, GrepTool
@@ -254,6 +256,38 @@ def test_is_dangerous_patterns():
     assert is_dangerous("sudo rm -rf /")
     assert not is_dangerous("rm -rf ./build")
     assert not is_dangerous("echo hello")
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "ls -la",
+        "cat README.md",
+        "grep -rn TODO src | wc -l",
+        "git log --oneline -5",
+        "git status && git diff",
+        "find . -name '*.py'",
+    ],
+)
+def test_is_read_only_allows_inspection(command):
+    assert is_read_only(command) is True
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "echo hi > file.txt",  # output redirection
+        "rm -rf build",  # not on the allowlist
+        "git push origin main",  # write-capable git subcommand
+        "git commit -m x",
+        "cat a | tee b",  # tee writes
+        "echo $(rm x)",  # command substitution
+        "mkdir foo",
+        "python script.py",
+    ],
+)
+def test_is_read_only_rejects_writers(command):
+    assert is_read_only(command) is False
 
 
 # --- output overflow (spill to disk) ----------------------------------------

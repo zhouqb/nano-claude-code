@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import shlex
 
 from pydantic import BaseModel, Field
 
@@ -26,6 +27,115 @@ DANGEROUS_PATTERNS = [
 
 def is_dangerous(command: str) -> bool:
     return any(pat.search(command) for pat in DANGEROUS_PATTERNS)
+
+
+# Commands that only read or inspect — safe for the read-only carve-out used by
+# memory extraction. Anything not on this allowlist is treated as write-capable.
+_READ_ONLY_COMMANDS = frozenset(
+    {
+        "ls",
+        "cat",
+        "head",
+        "tail",
+        "wc",
+        "grep",
+        "egrep",
+        "fgrep",
+        "rg",
+        "find",
+        "pwd",
+        "echo",
+        "printf",
+        "stat",
+        "file",
+        "tree",
+        "which",
+        "type",
+        "whoami",
+        "id",
+        "date",
+        "env",
+        "du",
+        "df",
+        "dirname",
+        "basename",
+        "realpath",
+        "readlink",
+        "sort",
+        "uniq",
+        "cut",
+        "comm",
+        "diff",
+        "cmp",
+        "tac",
+        "nl",
+        "column",
+        "hexdump",
+        "xxd",
+        "sha256sum",
+        "md5sum",
+        "true",
+    }
+)
+# git subcommands that never mutate the repo (write-capable ones like branch,
+# tag, remote, config, push are intentionally excluded).
+_READ_ONLY_GIT_SUBCOMMANDS = frozenset(
+    {
+        "status",
+        "log",
+        "diff",
+        "show",
+        "ls-files",
+        "rev-parse",
+        "blame",
+        "describe",
+        "cat-file",
+        "shortlog",
+        "ls-tree",
+        "reflog",
+        "whatchanged",
+    }
+)
+
+
+def is_read_only(command: str) -> bool:
+    """Best-effort: True only if every part of ``command`` merely reads/inspects.
+
+    Conservative by design — when in doubt it returns False. Rejects output
+    redirection and command substitution outright, then requires every segment of
+    a pipeline/sequence to be an allow-listed read-only command (or a read-only
+    ``git`` subcommand). Used by the memory-extraction permission gate.
+    """
+    if ">" in command or "$(" in command or "`" in command:
+        return False
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return False
+    if not tokens:
+        return False
+
+    segment: list[str] = []
+    segments: list[list[str]] = []
+    for tok in tokens:
+        if tok in ("|", "||", "&&", ";", "&"):
+            segments.append(segment)
+            segment = []
+        else:
+            segment.append(tok)
+    segments.append(segment)
+
+    for seg in segments:
+        if not seg:
+            continue
+        cmd = seg[0]
+        if cmd == "git":
+            sub = next((t for t in seg[1:] if not t.startswith("-")), "")
+            if sub not in _READ_ONLY_GIT_SUBCOMMANDS:
+                return False
+        elif cmd not in _READ_ONLY_COMMANDS:
+            return False
+    return True
 
 
 class BashInput(BaseModel):
