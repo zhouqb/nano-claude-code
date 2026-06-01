@@ -25,6 +25,7 @@ from nano_claude.extensibility.hooks import HookEvent, execute_hooks
 from nano_claude.extensibility.loader import load_extensions
 from nano_claude.extensibility.mcp import close_mcp
 from nano_claude.extensibility.skills import SKILL_REGISTRY, SkillContext, dispatch_skill
+from nano_claude.memory import MemorySession, is_memory_enabled, memory_dir
 from nano_claude.permissions.modes import PermissionMode
 from nano_claude.permissions.prompt import make_cli_prompter
 from nano_claude.permissions.settings import Settings
@@ -110,6 +111,28 @@ def _pick_session(cwd: str):
     return None
 
 
+def _new_memory_session(config: AgentConfig, settings: Settings) -> MemorySession | None:
+    """A recall session for this conversation, or None when memory is disabled."""
+    if not is_memory_enabled(settings):
+        return None
+    return MemorySession(
+        mdir=memory_dir(config.cwd, settings),
+        recall_model=config.recall_model or config.model,
+    )
+
+
+def _recent_tool_names(state: LoopState) -> list[str]:
+    """Tool names from the most recent assistant turn — recall's tool-doc hint."""
+    for message in reversed(state.messages):
+        if message.get("role") == "assistant" and message.get("tool_calls"):
+            return [
+                tc.get("function", {}).get("name", "")
+                for tc in message["tool_calls"]
+                if tc.get("function", {}).get("name")
+            ]
+    return []
+
+
 async def _fire_session_start(config: AgentConfig, state: LoopState) -> None:
     """Run SessionStart hooks; inject their stdout as a context note for the model."""
     session_id = state.storage.session_id if state.storage is not None else ""
@@ -145,6 +168,7 @@ async def _repl(config: AgentConfig, settings: Settings, state: LoopState) -> No
         )
 
     await _fire_session_start(config, state)
+    memory = _new_memory_session(config, settings)
 
     try:
         while True:
@@ -172,6 +196,7 @@ async def _repl(config: AgentConfig, settings: Settings, state: LoopState) -> No
             if user_input in ("/clear", "/reset", "/new"):
                 await storage.flush()
                 storage = _reset_state_for_clear(state, config, settings)
+                memory = _new_memory_session(config, settings)  # forget what we've surfaced
                 await storage.flush()
                 console.print(f"[dim]Conversation cleared. New session: {storage.session_id}[/dim]")
                 continue
@@ -205,6 +230,10 @@ async def _repl(config: AgentConfig, settings: Settings, state: LoopState) -> No
             storage.append_message(user_msg)
             state.cancel_event.clear()
 
+            # Fire memory recall for this turn (non-blocking); the loop consumes
+            # it only once it settles, so it never delays the response.
+            prefetch = memory.start(user_input, _recent_tool_names(state)) if memory else None
+
             try:
                 result = await query_loop(
                     state,
@@ -213,11 +242,14 @@ async def _repl(config: AgentConfig, settings: Settings, state: LoopState) -> No
                     prompter=prompter,
                     callbacks=ui.callbacks(),
                     allowed_tools=allowed_tools,
+                    memory_prefetch=prefetch,
                 )
             except Exception as exc:  # noqa: BLE001 - surface any provider error to the user
                 console.print(f"\n[red]Error:[/red] {exc}")
                 continue
             finally:
+                if prefetch is not None:
+                    prefetch.cancel()  # drop it if it never settled this turn
                 ui.finish_turn()
                 await storage.flush()
 

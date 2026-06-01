@@ -222,12 +222,17 @@ async def query_loop(
     on_text: TextCallback | None = None,
     callbacks: LoopCallbacks | None = None,
     allowed_tools: list[str] | None = None,
+    memory_prefetch: Any = None,
 ) -> LoopResult:
     """Run the agent loop until the model stops requesting tools.
 
     ``allowed_tools`` restricts the advertised tool set for this invocation
     (a skill's ``allowed-tools``, or a subagent's tool subset). ``None`` means
     the full registry for the current permission mode.
+
+    ``memory_prefetch`` is an optional :class:`~nano_claude.memory.recall.MemoryPrefetch`
+    fired for this user turn; the loop drains it (zero-wait) once it has settled
+    and injects the surfaced memory files. Subagents pass ``None``.
     """
     settings = settings or Settings()
     prompter = prompter or _deny_all_prompter
@@ -267,6 +272,14 @@ async def query_loop(
             return LoopResult(StopReason.ABORTED, state.turn_count, "")
         if state.turn_count >= config.max_turns:
             return LoopResult(StopReason.MAX_TURNS, state.turn_count, "")
+
+        # Memory recall: consume the prefetch only if it has already settled, so
+        # a slow side-query never delays the turn. Surfaced files become part of
+        # this iteration's view; if it never settles before the turn ends it's
+        # simply dropped (and cancelled by the REPL).
+        if memory_prefetch is not None:
+            for msg in memory_prefetch.drain_if_ready():
+                record(msg)
 
         # Run the compaction pipeline and send its derived view to the model.
         # state.messages stays canonical (storage + scrollback); the view is
