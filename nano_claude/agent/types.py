@@ -81,6 +81,8 @@ class AgentConfig:
     # Sonnet-class model — selection quality matters more than cost. None falls
     # back to ``model``.
     recall_model: str | None = None
+    # Turn-end background memory extraction (Phase 8e); opt-in.
+    extract_memories: bool = False
 
 
 @dataclass

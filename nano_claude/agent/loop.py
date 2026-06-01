@@ -131,6 +131,7 @@ async def _resolve_call(
     callbacks: LoopCallbacks,
     session_id: str,
     allowed_tools: list[str] | None,
+    permission_override: Any = None,
 ) -> _CallPlan:
     """Validate args and resolve permissions for a single tool call."""
     name = tc.get("name")
@@ -159,7 +160,12 @@ async def _resolve_call(
         except ValidationError as exc:
             return _CallPlan(fixed_content=f"Error: invalid arguments for {name}: {exc}")
 
-    decision = await has_permission_to_use_tool(tool, args_model, context, settings, prompter)
+    # A permission_override replaces the whole policy (rules + mode + prompt) —
+    # used by the memory-extraction fork to confine writes to the memory dir.
+    if permission_override is not None:
+        decision = await permission_override(tool, args_model, context)
+    else:
+        decision = await has_permission_to_use_tool(tool, args_model, context, settings, prompter)
     if decision.behavior != "allow":
         if callbacks.on_tool_denied:
             callbacks.on_tool_denied(name, decision.reason)
@@ -223,6 +229,7 @@ async def query_loop(
     callbacks: LoopCallbacks | None = None,
     allowed_tools: list[str] | None = None,
     memory_prefetch: Any = None,
+    permission_override: Any = None,
 ) -> LoopResult:
     """Run the agent loop until the model stops requesting tools.
 
@@ -353,7 +360,16 @@ async def query_loop(
 
         # Resolve permissions sequentially, then execute allowed calls concurrently.
         plans = [
-            await _resolve_call(tc, context, settings, prompter, callbacks, session_id, allowed_tools)
+            await _resolve_call(
+                tc,
+                context,
+                settings,
+                prompter,
+                callbacks,
+                session_id,
+                allowed_tools,
+                permission_override,
+            )
             for tc in tool_calls
         ]
         contents = await asyncio.gather(

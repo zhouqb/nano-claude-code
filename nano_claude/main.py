@@ -35,6 +35,7 @@ from nano_claude.extensibility.loader import load_extensions
 from nano_claude.extensibility.mcp import close_mcp
 from nano_claude.extensibility.skills import SKILL_REGISTRY, SkillContext, dispatch_skill
 from nano_claude.memory import MemorySession, is_memory_enabled, memory_dir
+from nano_claude.memory.extract import ExtractionManager
 from nano_claude.permissions.modes import PermissionMode
 from nano_claude.permissions.prompt import make_cli_prompter
 from nano_claude.permissions.settings import Settings
@@ -130,6 +131,15 @@ def _new_memory_session(config: AgentConfig, settings: Settings) -> MemorySessio
     )
 
 
+def _new_extractor(
+    config: AgentConfig, settings: Settings, state: LoopState
+) -> ExtractionManager | None:
+    """A turn-end extraction manager when memory + the opt-in flag are both on."""
+    if not (is_memory_enabled(settings) and config.extract_memories):
+        return None
+    return ExtractionManager(state, config, settings, memory_dir(config.cwd, settings))
+
+
 def _recent_tool_names(state: LoopState) -> list[str]:
     """Tool names from the most recent assistant turn — recall's tool-doc hint."""
     for message in reversed(state.messages):
@@ -178,6 +188,7 @@ async def _repl(config: AgentConfig, settings: Settings, state: LoopState) -> No
 
     await _fire_session_start(config, state)
     memory = _new_memory_session(config, settings)
+    extractor = _new_extractor(config, settings, state)
 
     try:
         while True:
@@ -206,6 +217,7 @@ async def _repl(config: AgentConfig, settings: Settings, state: LoopState) -> No
                 await storage.flush()
                 storage = _reset_state_for_clear(state, config, settings)
                 memory = _new_memory_session(config, settings)  # forget what we've surfaced
+                extractor = _new_extractor(config, settings, state)  # fresh cursor
                 await storage.flush()
                 console.print(f"[dim]Conversation cleared. New session: {storage.session_id}[/dim]")
                 continue
@@ -301,6 +313,8 @@ async def _repl(config: AgentConfig, settings: Settings, state: LoopState) -> No
                 )
                 for warning in stop.warnings:
                     console.print(f"[yellow]Stop hook: {warning}[/yellow]")
+                if extractor is not None:
+                    extractor.schedule()  # background; saves anything the agent missed
 
             console.print()
             if result.reason is StopReason.MAX_TURNS:
@@ -309,6 +323,8 @@ async def _repl(config: AgentConfig, settings: Settings, state: LoopState) -> No
                 console.print(f"[yellow]{result.final_text}[/yellow]")
             console.print(format_turn_footer(state.token_usage, config.model))
     finally:
+        if extractor is not None:
+            await extractor.drain()  # let any in-flight extraction finish writing
         await storage.flush()
         await close_mcp()
         console.print("[dim]Session saved. Resume with `nano-claude --resume`.[/dim]")
@@ -389,6 +405,11 @@ def _reset_state_for_clear(
     show_default=True,
     help="How over-budget tool results are previewed: keep the head (prefix) or head+tail.",
 )
+@click.option(
+    "--extract-memories",
+    is_flag=True,
+    help="Run a background memory-extraction agent at the end of each turn (Phase 8e).",
+)
 def cli(
     model: str,
     max_turns: int,
@@ -396,6 +417,7 @@ def cli(
     resume: bool,
     context_collapse: bool,
     tool_preview_format: str,
+    extract_memories: bool,
 ) -> None:
     """nano-claude-code: a minimal Claude Code clone."""
     settings = Settings.load()
@@ -406,6 +428,7 @@ def cli(
         permission_mode=PermissionMode(permission_mode),
         context_collapse=context_collapse,
         tool_result_preview_format=tool_preview_format,
+        extract_memories=extract_memories,
     )
     config.context_window = _resolve_context_window(model, config.context_window)
 
