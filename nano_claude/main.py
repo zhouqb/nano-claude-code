@@ -24,7 +24,9 @@ from nano_claude.commands import (
     format_help,
     format_memory,
     format_model,
+    format_model_switch,
     format_turn_footer,
+    model_supports_function_calling,
     open_memory_file,
     remember_directive,
 )
@@ -238,8 +240,24 @@ async def _repl(config: AgentConfig, settings: Settings, state: LoopState) -> No
             if user_input == "/cost":
                 console.print(format_cost(state.token_usage, config.model))
                 continue
-            if user_input == "/model":
-                console.print(format_model(config.model, config.context_window))
+            if user_input.split(" ", 1)[0] == "/model":
+                _, _, target = user_input.partition(" ")
+                target = target.strip()
+                if not target:
+                    console.print(format_model(config.model, config.context_window))
+                    continue
+                # Switch for the rest of the session: the loop reads config.model
+                # each turn, so mutating it here is enough. Re-resolve the context
+                # window so compaction thresholds track the new model.
+                config.model = target
+                config.context_window = _resolve_context_window(
+                    target, AgentConfig.context_window
+                )
+                console.print(
+                    format_model_switch(
+                        target, config.context_window, model_supports_function_calling(target)
+                    )
+                )
                 continue
             if user_input.split(" ", 1)[0] == "/memory":
                 if not is_memory_enabled(settings):
