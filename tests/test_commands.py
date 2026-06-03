@@ -9,7 +9,9 @@ from nano_claude.commands import (
     format_cost,
     format_help,
     format_model,
+    format_model_switch,
     format_turn_footer,
+    model_supports_function_calling,
 )
 from nano_claude.extensibility.skills.types import SkillDefinition
 from nano_claude.subagents.types import AgentDefinition
@@ -81,6 +83,36 @@ def test_model_shows_name_and_window():
     text = format_model("anthropic/claude-sonnet-4-6", 200_000)
     assert "anthropic/claude-sonnet-4-6" in text
     assert "200,000" in text
+
+
+def test_model_summary_hints_at_switching():
+    assert "/model <" in format_model("anthropic/claude-sonnet-4-6", 200_000)
+
+
+def test_model_switch_reports_new_model_and_window():
+    text = format_model_switch("deepseek/deepseek-chat", 131_072, True)
+    assert "deepseek/deepseek-chat" in text
+    assert "131,072" in text
+    assert "⚠" not in text
+
+
+def test_model_switch_warns_when_no_tool_support():
+    text = format_model_switch("deepseek/deepseek-reasoner", 131_072, False)
+    assert "⚠" in text
+    assert "tool-calling" in text
+
+
+def test_model_switch_notes_unknown_tool_support():
+    text = format_model_switch("totally/made-up-model-xyz", 200_000, None)
+    assert "unknown" in text.lower()
+    assert "⚠" not in text
+
+
+def test_function_calling_support_known_and_unknown():
+    # deepseek-chat advertises tool-calling; reasoner does not; bogus is unknown.
+    assert model_supports_function_calling("deepseek/deepseek-chat") is True
+    assert model_supports_function_calling("deepseek/deepseek-reasoner") is False
+    assert model_supports_function_calling("totally/made-up-model-xyz") is None
 
 
 # --- turn footer ------------------------------------------------------------

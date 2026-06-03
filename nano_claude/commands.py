@@ -21,7 +21,7 @@ from nano_claude.subagents.types import AgentDefinition
 BUILTIN_COMMANDS: list[tuple[str, str]] = [
     ("/help", "Show this help."),
     ("/cost", "Show token usage and estimated cost for this session."),
-    ("/model", "Show the current model and context window."),
+    ("/model", "Show the model, or switch it: /model <litellm-model-string>."),
     ("/compact", "Summarize the conversation so far to free up context."),
     ("/clear", "Clear the conversation and start a fresh session."),
     ("/memory", "List memories; /memory <file> opens it in $EDITOR."),
@@ -161,7 +161,44 @@ def format_cost(usage: TokenUsage, model: str) -> str:
 
 def format_model(model: str, context_window: int) -> str:
     """Render the /model summary."""
-    return f"[bold]Model[/bold] {model}\n  Context window: {context_window:,} tokens"
+    return (
+        f"[bold]Model[/bold] {model}\n"
+        f"  Context window: {context_window:,} tokens\n"
+        "[dim]Switch with /model <litellm-model-string> (e.g. deepseek/deepseek-chat).[/dim]"
+    )
+
+
+def model_supports_function_calling(model: str) -> bool | None:
+    """Whether LiteLLM reports tool-calling support, or None if the model is unknown.
+
+    The agent loop drives everything through tool calls, so a model that can't
+    do function calling is effectively unusable here — surfaced as a warning on
+    switch rather than a hard error (LiteLLM's map isn't exhaustive)."""
+    try:
+        import litellm
+
+        info = litellm.get_model_info(model)
+    except Exception:
+        return None
+    return (info or {}).get("supports_function_calling")
+
+
+def format_model_switch(model: str, context_window: int, supports_tools: bool | None) -> str:
+    """Render the confirmation for ``/model <name>``."""
+    lines = [
+        f"[green]Switched model →[/green] [bold]{model}[/bold]",
+        f"  Context window: {context_window:,} tokens",
+    ]
+    if supports_tools is False:
+        lines.append(
+            "  [yellow]⚠ This model does not advertise tool-calling support; "
+            "the agent may be unable to run tools.[/yellow]"
+        )
+    elif supports_tools is None:
+        lines.append(
+            "  [dim]Tool-calling support unknown to LiteLLM — proceed if you trust it.[/dim]"
+        )
+    return "\n".join(lines)
 
 
 def format_turn_footer(usage: TokenUsage, model: str) -> str:
