@@ -49,6 +49,7 @@ from nano_claude.session.restore import (
 )
 from nano_claude.session.storage import SessionStorage, new_session_id, session_file
 from nano_claude.subagents import AGENT_REGISTRY, load_agents
+from nano_claude.telemetry import init_telemetry, set_session_log_file, shutdown_telemetry
 from nano_claude.ui import ReplUI
 
 DEFAULT_MODEL = os.environ.get("NANO_CLAUDE_MODEL", "anthropic/claude-sonnet-4-6")
@@ -165,10 +166,16 @@ async def _fire_session_start(config: AgentConfig, state: LoopState) -> None:
             state.storage.append_message(note)
 
 
+def _session_log_path(storage: SessionStorage) -> str:
+    """Per-session OTel log file, beside the session JSONL."""
+    return str(storage.path.parent / f"{storage.session_id}.log.jsonl")
+
+
 async def _repl(config: AgentConfig, settings: Settings, state: LoopState) -> None:
     session: PromptSession = PromptSession()
     prompter = make_cli_prompter(session)
     storage = state.storage
+    set_session_log_file(_session_log_path(storage))  # route this session's logs
     ui = ReplUI(console)
 
     console.print(
@@ -216,6 +223,7 @@ async def _repl(config: AgentConfig, settings: Settings, state: LoopState) -> No
             if user_input in ("/clear", "/reset", "/new"):
                 await storage.flush()
                 storage = _reset_state_for_clear(state, config, settings)
+                set_session_log_file(_session_log_path(storage))  # logs follow the new session
                 memory = _new_memory_session(config, settings)  # forget what we've surfaced
                 extractor = _new_extractor(config, settings, state)  # fresh cursor
                 await storage.flush()
@@ -421,6 +429,8 @@ def cli(
 ) -> None:
     """nano-claude-code: a minimal Claude Code clone."""
     settings = Settings.load()
+    if init_telemetry():
+        console.print("[dim]OpenTelemetry enabled.[/dim]")
     load_agents()  # populate AGENT_REGISTRY (built-in + ~/.nano-claude/agents/*.md)
     config = AgentConfig(
         model=model,
@@ -438,6 +448,8 @@ def cli(
         asyncio.run(_repl(config, settings, state))
     except KeyboardInterrupt:
         pass
+    finally:
+        shutdown_telemetry()  # flush buffered spans/logs before exit
 
 
 if __name__ == "__main__":

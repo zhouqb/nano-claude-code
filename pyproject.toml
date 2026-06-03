@@ -15,10 +15,19 @@ dependencies = [
     "aiofiles>=23.0",
     "python-frontmatter>=1.0",
     "mcp>=1.0",
+    "opentelemetry-api>=1.20.0",
 ]
 
 [project.optional-dependencies]
+# The OpenTelemetry SDK + OTLP exporter are only needed to *emit* telemetry; the
+# instrumentation in the loop relies on the always-installed API and no-ops
+# without these. See nano_claude/telemetry.py.
+otel = [
+    "opentelemetry-sdk>=1.20.0",
+    "opentelemetry-exporter-otlp-proto-http>=1.20.0",
+]
 dev = [
+    "nano-claude[otel]",
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "ruff>=0.4",
