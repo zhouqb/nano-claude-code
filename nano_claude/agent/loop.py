@@ -7,6 +7,10 @@ call before looping again. The loop ends when the model returns no tool calls.
 
 Permission *prompts* are resolved sequentially (so two ``ask`` tools in one
 turn don't fight over the terminal); the actual tool *execution* is concurrent.
+
+OpenTelemetry spans wrap each user turn (``agent.turn``), each model request
+(``chat <model>``), and each tool call (``tool <name>``); they no-op unless
+telemetry is enabled. See :mod:`nano_claude.telemetry`.
 """
 
 from __future__ import annotations
@@ -19,6 +23,8 @@ from dataclasses import dataclass
 from typing import Any
 
 import litellm
+from opentelemetry.trace import SpanKind
+from opentelemetry.trace.status import Status, StatusCode
 from pydantic import ValidationError
 
 from nano_claude.agent.types import AgentConfig, LoopResult, LoopState, StopReason
@@ -32,6 +38,7 @@ from nano_claude.permissions.manager import (
 )
 from nano_claude.permissions.settings import Settings
 from nano_claude.session.storage import session_output_dir
+from nano_claude.telemetry import log, tracer
 from nano_claude.tools.base import ToolContext, ToolResult
 from nano_claude.tools.registry import get_tool, get_tools
 
@@ -114,6 +121,23 @@ def _to_assistant_tool_calls(tool_calls: list[dict]) -> list[dict]:
     ]
 
 
+def _annotate_request_span(span, chunk) -> None:
+    """Record GenAI usage + finish-reason attributes from the final stream chunk."""
+    usage = getattr(chunk, "usage", None)
+    if usage:
+        prompt = getattr(usage, "prompt_tokens", None)
+        completion = getattr(usage, "completion_tokens", None)
+        if prompt is not None:
+            span.set_attribute("gen_ai.usage.input_tokens", prompt)
+        if completion is not None:
+            span.set_attribute("gen_ai.usage.output_tokens", completion)
+    choices = getattr(chunk, "choices", None)
+    if choices:
+        finish = getattr(choices[0], "finish_reason", None)
+        if finish:
+            span.set_attribute("gen_ai.response.finish_reasons", [finish])
+
+
 # A resolved plan for one tool call: either ready-to-run or a fixed result string.
 @dataclass
 class _CallPlan:
@@ -167,6 +191,7 @@ async def _resolve_call(
     else:
         decision = await has_permission_to_use_tool(tool, args_model, context, settings, prompter)
     if decision.behavior != "allow":
+        log.info("tool %s denied: %s", name, decision.reason or "denied")
         if callbacks.on_tool_denied:
             callbacks.on_tool_denied(name, decision.reason)
         return _CallPlan(fixed_content=f"Permission denied: {decision.reason or 'denied'}")
@@ -180,6 +205,7 @@ async def _resolve_call(
         tool_input=parsed,
     )
     if pre.blocked:
+        log.info("tool %s blocked by hook: %s", name, pre.block_reason)
         if callbacks.on_tool_denied:
             callbacks.on_tool_denied(name, pre.block_reason)
         return _CallPlan(fixed_content=f"Blocked by hook: {pre.block_reason}")
@@ -196,27 +222,36 @@ async def _run_call(
     if context.cancel_event.is_set():
         return "[Interrupted]"
 
-    if callbacks.on_tool_start:
-        callbacks.on_tool_start(plan.tool.name, plan.args_dict or {})
-    try:
-        result = await plan.tool.call(plan.args_model, context)
-    except Exception as exc:  # noqa: BLE001 - never let a tool crash the loop
-        result = ToolResult.fail(f"Tool raised an exception: {exc}")
-    if callbacks.on_tool_end:
-        callbacks.on_tool_end(plan.tool.name, result)
+    name = plan.tool.name
+    with tracer.start_as_current_span(f"tool {name}", kind=SpanKind.INTERNAL) as span:
+        span.set_attribute("nano_claude.tool.name", name)
+        if callbacks.on_tool_start:
+            callbacks.on_tool_start(name, plan.args_dict or {})
+        try:
+            result = await plan.tool.call(plan.args_model, context)
+        except Exception as exc:  # noqa: BLE001 - never let a tool crash the loop
+            span.record_exception(exc)
+            span.set_status(Status(StatusCode.ERROR, str(exc)))
+            result = ToolResult.fail(f"Tool raised an exception: {exc}")
+        span.set_attribute("nano_claude.tool.is_error", result.is_error)
+        if result.is_error:
+            span.set_status(Status(StatusCode.ERROR, result.error or "tool error"))
+        if callbacks.on_tool_end:
+            callbacks.on_tool_end(name, result)
+        log.info("tool %s finished (error=%s)", name, result.is_error)
 
-    # PostToolUse hooks may append context the model sees with the result.
-    post = await execute_hooks(
-        HookEvent.POST_TOOL_USE,
-        session_id=session_id,
-        cwd=context.cwd,
-        tool_name=plan.tool.name,
-        tool_input=plan.args_dict or {},
-        tool_response=result.output,
-    )
-    if post.context_text:
-        return f"{result.output}\n[hook] {post.context_text}"
-    return result.output
+        # PostToolUse hooks may append context the model sees with the result.
+        post = await execute_hooks(
+            HookEvent.POST_TOOL_USE,
+            session_id=session_id,
+            cwd=context.cwd,
+            tool_name=name,
+            tool_input=plan.args_dict or {},
+            tool_response=result.output,
+        )
+        if post.context_text:
+            return f"{result.output}\n[hook] {post.context_text}"
+        return result.output
 
 
 async def query_loop(
@@ -274,108 +309,134 @@ async def query_loop(
         if state.storage is not None:
             state.storage.append_message(message)
 
-    while True:
-        if state.cancel_event.is_set():
-            return LoopResult(StopReason.ABORTED, state.turn_count, "")
-        if state.turn_count >= config.max_turns:
-            return LoopResult(StopReason.MAX_TURNS, state.turn_count, "")
+    turn_attrs: dict[str, Any] = {
+        "nano_claude.model": config.model,
+        "nano_claude.permission_mode": config.permission_mode.value,
+        # Subagents run with no storage (empty session_id) — tag the span so a
+        # nested subagent turn is distinguishable in traces.
+        "nano_claude.subagent": session_id == "",
+    }
+    if allowed_tools is not None:
+        turn_attrs["nano_claude.allowed_tools"] = len(allowed_tools)
 
-        # Memory recall: consume the prefetch only if it has already settled, so
-        # a slow side-query never delays the turn. Surfaced files become part of
-        # this iteration's view; if it never settles before the turn ends it's
-        # simply dropped (and cancelled by the REPL).
-        if memory_prefetch is not None:
-            for msg in memory_prefetch.drain_if_ready():
-                record(msg)
-
-        # Run the compaction pipeline and send its derived view to the model.
-        # state.messages stays canonical (storage + scrollback); the view is
-        # what the model sees this turn. Tool results / assistant turns below
-        # are recorded into state.messages, so next iteration re-derives a
-        # fresh view from the updated canonical store.
-        view = await run_context_management(state, config, callbacks)
-        if view.blocked:
-            notice = "Context is full. Run /compact to continue."
-            return LoopResult(StopReason.BLOCKED, state.turn_count, notice)
-
-        text_parts: list[str] = []
-        tool_calls: list[dict] = []
-        last_chunk = None
-        started = False
-
-        if callbacks.on_request_start:
-            callbacks.on_request_start()
-
-        response = await _call_with_retry(
-            lambda v=view: litellm.acompletion(
-                model=config.model,
-                messages=v.messages,
-                tools=tool_schemas or None,
-                stream=True,
-                stream_options={"include_usage": True},
-            )
-        )
-
-        async for chunk in response:
+    with tracer.start_as_current_span("agent.turn", attributes=turn_attrs):
+        while True:
             if state.cancel_event.is_set():
-                return LoopResult(StopReason.ABORTED, state.turn_count, "".join(text_parts))
-            last_chunk = chunk
-            choices = getattr(chunk, "choices", None)
-            if not choices:
-                continue
-            delta = choices[0].delta
-            content = getattr(delta, "content", None)
-            if content:
-                if not started and callbacks.on_assistant_start:
-                    callbacks.on_assistant_start()
-                started = True
-                text_parts.append(content)
-                if callbacks.on_text:
-                    callbacks.on_text(content)
-            tc_deltas = getattr(delta, "tool_calls", None)
-            if tc_deltas:
-                _merge_tool_call_deltas(tool_calls, tc_deltas)
+                return LoopResult(StopReason.ABORTED, state.turn_count, "")
+            if state.turn_count >= config.max_turns:
+                return LoopResult(StopReason.MAX_TURNS, state.turn_count, "")
 
-        if last_chunk is not None:
-            state.token_usage.update_from_litellm(last_chunk)
-            # Record the API-reported input-token count — the current-context
-            # signal the pipeline's thresholds key off next turn.
-            record_input_tokens(state, last_chunk)
-        state.turn_count += 1
+            # Memory recall: consume the prefetch only if it has already settled, so
+            # a slow side-query never delays the turn. Surfaced files become part of
+            # this iteration's view; if it never settles before the turn ends it's
+            # simply dropped (and cancelled by the REPL).
+            if memory_prefetch is not None:
+                for msg in memory_prefetch.drain_if_ready():
+                    record(msg)
 
-        final_text = "".join(text_parts)
+            # Run the compaction pipeline and send its derived view to the model.
+            # state.messages stays canonical (storage + scrollback); the view is
+            # what the model sees this turn. Tool results / assistant turns below
+            # are recorded into state.messages, so next iteration re-derives a
+            # fresh view from the updated canonical store.
+            view = await run_context_management(state, config, callbacks)
+            if view.blocked:
+                notice = "Context is full. Run /compact to continue."
+                return LoopResult(StopReason.BLOCKED, state.turn_count, notice)
 
-        if not tool_calls:
-            record({"role": "assistant", "content": final_text})
-            return LoopResult(StopReason.COMPLETED, state.turn_count, final_text)
+            text_parts: list[str] = []
+            tool_calls: list[dict] = []
+            last_chunk = None
+            started = False
 
-        # Record the assistant turn (text + the calls it requested).
-        record(
-            {
-                "role": "assistant",
-                "content": final_text or None,
-                "tool_calls": _to_assistant_tool_calls(tool_calls),
-            }
-        )
+            if callbacks.on_request_start:
+                callbacks.on_request_start()
 
-        # Resolve permissions sequentially, then execute allowed calls concurrently.
-        plans = [
-            await _resolve_call(
-                tc,
-                context,
-                settings,
-                prompter,
-                callbacks,
-                session_id,
-                allowed_tools,
-                permission_override,
+            with tracer.start_as_current_span(
+                f"chat {config.model}", kind=SpanKind.CLIENT
+            ) as req_span:
+                req_span.set_attribute("gen_ai.operation.name", "chat")
+                req_span.set_attribute("gen_ai.request.model", config.model)
+                try:
+                    response = await _call_with_retry(
+                        lambda v=view: litellm.acompletion(
+                            model=config.model,
+                            messages=v.messages,
+                            tools=tool_schemas or None,
+                            stream=True,
+                            stream_options={"include_usage": True},
+                        )
+                    )
+
+                    async for chunk in response:
+                        if state.cancel_event.is_set():
+                            return LoopResult(
+                                StopReason.ABORTED, state.turn_count, "".join(text_parts)
+                            )
+                        last_chunk = chunk
+                        choices = getattr(chunk, "choices", None)
+                        if not choices:
+                            continue
+                        delta = choices[0].delta
+                        content = getattr(delta, "content", None)
+                        if content:
+                            if not started and callbacks.on_assistant_start:
+                                callbacks.on_assistant_start()
+                            started = True
+                            text_parts.append(content)
+                            if callbacks.on_text:
+                                callbacks.on_text(content)
+                        tc_deltas = getattr(delta, "tool_calls", None)
+                        if tc_deltas:
+                            _merge_tool_call_deltas(tool_calls, tc_deltas)
+                except Exception as exc:  # noqa: BLE001 - re-raised after annotating the span
+                    req_span.record_exception(exc)
+                    req_span.set_status(Status(StatusCode.ERROR, str(exc)))
+                    raise
+
+                if last_chunk is not None:
+                    state.token_usage.update_from_litellm(last_chunk)
+                    # Record the API-reported input-token count — the current-context
+                    # signal the pipeline's thresholds key off next turn.
+                    record_input_tokens(state, last_chunk)
+                    _annotate_request_span(req_span, last_chunk)
+                req_span.set_attribute("gen_ai.response.tool_call_count", len(tool_calls))
+            state.turn_count += 1
+
+            final_text = "".join(text_parts)
+
+            if not tool_calls:
+                record({"role": "assistant", "content": final_text})
+                log.info("turn complete (no tool calls) after %d iteration(s)", state.turn_count)
+                return LoopResult(StopReason.COMPLETED, state.turn_count, final_text)
+
+            # Record the assistant turn (text + the calls it requested).
+            record(
+                {
+                    "role": "assistant",
+                    "content": final_text or None,
+                    "tool_calls": _to_assistant_tool_calls(tool_calls),
+                }
             )
-            for tc in tool_calls
-        ]
-        contents = await asyncio.gather(
-            *(_run_call(plan, context, callbacks, session_id) for plan in plans)
-        )
 
-        for tc, content in zip(tool_calls, contents, strict=True):
-            record({"role": "tool", "tool_call_id": tc["id"], "content": content})
-        # Loop continues: the model sees the tool results next iteration.
+            # Resolve permissions sequentially, then execute allowed calls concurrently.
+            plans = [
+                await _resolve_call(
+                    tc,
+                    context,
+                    settings,
+                    prompter,
+                    callbacks,
+                    session_id,
+                    allowed_tools,
+                    permission_override,
+                )
+                for tc in tool_calls
+            ]
+            contents = await asyncio.gather(
+                *(_run_call(plan, context, callbacks, session_id) for plan in plans)
+            )
+
+            for tc, content in zip(tool_calls, contents, strict=True):
+                record({"role": "tool", "tool_call_id": tc["id"], "content": content})
+            # Loop continues: the model sees the tool results next iteration.
