@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sys
 from datetime import datetime
 
 import click
+from click.core import ParameterSource
 from prompt_toolkit import PromptSession
 from prompt_toolkit.patch_stdout import patch_stdout
 from rich.console import Console
@@ -172,6 +174,117 @@ async def _fire_session_start(config: AgentConfig, state: LoopState) -> None:
 def _session_log_path(storage: SessionStorage) -> str:
     """Per-session OTel log file, beside the session JSONL."""
     return str(storage.path.parent / f"{storage.session_id}.log.jsonl")
+
+
+def _resolve_cli_prompt(prompt_parts: tuple[str, ...], stdin_prompt: bool) -> str | None:
+    """Resolve one-shot input from argv or stdin; ``None`` means launch the REPL."""
+    if prompt_parts and stdin_prompt:
+        raise click.UsageError("Pass the prompt either as arguments or via --stdin, not both.")
+    if stdin_prompt:
+        prompt = sys.stdin.read().strip()
+        if not prompt:
+            raise click.UsageError("--stdin was set but no prompt was provided on stdin.")
+        return prompt
+    prompt = " ".join(prompt_parts).strip()
+    return prompt or None
+
+
+async def _prepare_agent_input(
+    user_input: str, config: AgentConfig, settings: Settings, session_id: str
+) -> tuple[str, list[str] | None]:
+    """Apply prompt-expanding commands before sending input to the model."""
+    if user_input.split(" ", 1)[0] in ("/remember", "/forget"):
+        verb, _, rest = user_input.partition(" ")
+        rest = rest.strip()
+        if not is_memory_enabled(settings):
+            raise click.ClickException("Memory is disabled for this session.")
+        if not rest:
+            raise click.UsageError(f"Usage: {verb} <text>")
+        user_input = remember_directive(rest) if verb == "/remember" else forget_directive(rest)
+    elif user_input == "/init":
+        user_input = INIT_PROMPT
+
+    allowed_tools: list[str] | None = None
+    if user_input.startswith("/"):
+        dispatch = await dispatch_skill(
+            user_input, SkillContext(cwd=config.cwd, session_id=session_id)
+        )
+        if dispatch is not None:
+            user_input = dispatch.prompt
+            allowed_tools = dispatch.allowed_tools
+    return user_input, allowed_tools
+
+
+async def _run_single_turn(
+    config: AgentConfig, settings: Settings, state: LoopState, raw_input: str
+) -> None:
+    """Run one command-line turn, stream output, then exit."""
+    storage = state.storage
+    if storage is None:
+        raise click.ClickException("Session storage was not initialized.")
+    set_session_log_file(_session_log_path(storage))
+    ui = ReplUI(console)
+    prompter = make_cli_prompter(on_prompt=ui.pause_for_input)
+
+    summary = await load_extensions(settings)
+    if summary.anything:
+        console.print(
+            f"[dim]Extensions: {summary.hooks} hook(s), {summary.skills} skill(s), "
+            f"{summary.mcp_tools} MCP tool(s), {summary.plugins} plugin(s).[/dim]"
+        )
+
+    await _fire_session_start(config, state)
+    memory = _new_memory_session(config, settings)
+    extractor = _new_extractor(config, settings, state)
+
+    try:
+        user_input, allowed_tools = await _prepare_agent_input(
+            raw_input, config, settings, storage.session_id
+        )
+        user_msg = {"role": "user", "content": user_input}
+        state.messages.append(user_msg)
+        storage.append_message(user_msg)
+        state.cancel_event.clear()
+
+        prefetch = memory.start(user_input, _recent_tool_names(state)) if memory else None
+        try:
+            result = await query_loop(
+                state,
+                config,
+                settings=settings,
+                prompter=prompter,
+                callbacks=ui.callbacks(),
+                allowed_tools=allowed_tools,
+                memory_prefetch=prefetch,
+            )
+        finally:
+            if prefetch is not None:
+                prefetch.cancel()
+            ui.finish_turn()
+            await storage.flush()
+
+        if result.reason is StopReason.COMPLETED:
+            stop = await execute_hooks(
+                HookEvent.STOP, session_id=storage.session_id, cwd=config.cwd
+            )
+            for warning in stop.warnings:
+                console.print(f"[yellow]Stop hook: {warning}[/yellow]")
+            if extractor is not None:
+                extractor.schedule()
+                await extractor.drain()
+            return
+        if result.reason is StopReason.MAX_TURNS:
+            raise click.ClickException("Reached max turns before completing the request.")
+        if result.reason is StopReason.BLOCKED:
+            raise click.ClickException(result.final_text or "Context is full.")
+        if result.reason is StopReason.ABORTED:
+            raise click.ClickException("Request was aborted.")
+        raise click.ClickException(result.final_text or "Request did not complete.")
+    finally:
+        if extractor is not None:
+            await extractor.drain()
+        await storage.flush()
+        await close_mcp()
 
 
 async def _repl(config: AgentConfig, settings: Settings, state: LoopState) -> None:
@@ -424,6 +537,12 @@ def _reset_state_for_clear(
 )
 @click.option("--resume", is_flag=True, help="Resume a previous session in this directory.")
 @click.option(
+    "--stdin",
+    "stdin_prompt",
+    is_flag=True,
+    help="Read a single prompt from stdin and exit after one turn.",
+)
+@click.option(
     "--context-collapse",
     is_flag=True,
     help="Enable Layer 4 context collapse (experimental): summarize old read/search spans.",
@@ -440,14 +559,19 @@ def _reset_state_for_clear(
     is_flag=True,
     help="Run a background memory-extraction agent at the end of each turn (Phase 8e).",
 )
+@click.argument("prompt", nargs=-1)
+@click.pass_context
 def cli(
+    ctx: click.Context,
     model: str,
     max_turns: int,
     permission_mode: str,
     resume: bool,
+    stdin_prompt: bool,
     context_collapse: bool,
     tool_preview_format: str,
     extract_memories: bool,
+    prompt: tuple[str, ...],
 ) -> None:
     """nano-claude-code: a minimal Claude Code clone."""
     settings = Settings.load()
@@ -455,6 +579,13 @@ def cli(
     if init_telemetry():
         console.print("[dim]OpenTelemetry enabled.[/dim]")
     load_agents()  # populate AGENT_REGISTRY (built-in + ~/.nano-claude/agents/*.md)
+    one_shot_prompt = _resolve_cli_prompt(prompt, stdin_prompt)
+    if (
+        one_shot_prompt is not None
+        and ctx.get_parameter_source("permission_mode") is ParameterSource.DEFAULT
+    ):
+        permission_mode = PermissionMode.BYPASS.value
+
     config = AgentConfig(
         model=model,
         max_turns=max_turns,
@@ -468,7 +599,13 @@ def cli(
     state = _init_state(config, settings, resume)
 
     try:
-        asyncio.run(_repl(config, settings, state))
+        runner = _run_single_turn if one_shot_prompt is not None else _repl
+        args = (config, settings, state, one_shot_prompt) if one_shot_prompt is not None else (
+            config,
+            settings,
+            state,
+        )
+        asyncio.run(runner(*args))
     except KeyboardInterrupt:
         pass
     finally:

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import click
+
 from nano_claude.agent.types import AgentConfig, LoopState, TokenUsage
-from nano_claude.main import INIT_PROMPT, _reset_state_for_clear
+from nano_claude.main import INIT_PROMPT, _reset_state_for_clear, _resolve_cli_prompt
 from nano_claude.permissions.settings import Settings
 
 
@@ -16,6 +18,24 @@ def test_init_prompt_targets_claude_md():
 def test_init_prompt_discourages_generic_content():
     assert "Avoid listing every component or file structure" in INIT_PROMPT
     assert "Don't include generic development practices" in INIT_PROMPT
+
+
+def test_resolve_cli_prompt_from_args():
+    assert _resolve_cli_prompt(("explain", "this", "repo"), False) == "explain this repo"
+
+
+def test_resolve_cli_prompt_from_stdin(monkeypatch):
+    monkeypatch.setattr("sys.stdin.read", lambda: "summarize changes\n")
+    assert _resolve_cli_prompt((), True) == "summarize changes"
+
+
+def test_resolve_cli_prompt_rejects_mixed_sources():
+    try:
+        _resolve_cli_prompt(("hi",), True)
+    except click.UsageError as exc:
+        assert "either as arguments or via --stdin" in str(exc)
+    else:
+        raise AssertionError("expected UsageError")
 
 
 def test_reset_state_for_clear_starts_fresh_session(tmp_path, monkeypatch):
