@@ -65,7 +65,7 @@ class TokenUsage:
 
 @dataclass
 class AgentConfig:
-    model: str = "deepseek/deepseek-chat"
+    model: str = "deepseek/deepseek-v4-flash"
     max_turns: int = 50
     permission_mode: PermissionMode = PermissionMode.DEFAULT
     auto_compact: bool = True

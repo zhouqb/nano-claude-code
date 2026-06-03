@@ -41,6 +41,7 @@ from nano_claude.memory.extract import ExtractionManager
 from nano_claude.permissions.modes import PermissionMode
 from nano_claude.permissions.prompt import make_cli_prompter
 from nano_claude.permissions.settings import Settings
+from nano_claude.pricing import register_known_models
 from nano_claude.session.restore import (
     last_assistant_ts,
     list_sessions,
@@ -54,7 +55,7 @@ from nano_claude.subagents import AGENT_REGISTRY, load_agents
 from nano_claude.telemetry import init_telemetry, set_session_log_file, shutdown_telemetry
 from nano_claude.ui import ReplUI
 
-DEFAULT_MODEL = os.environ.get("NANO_CLAUDE_MODEL", "deepseek/deepseek-chat")
+DEFAULT_MODEL = os.environ.get("NANO_CLAUDE_MODEL", "deepseek/deepseek-v4-flash")
 
 console = Console()
 
@@ -450,6 +451,7 @@ def cli(
 ) -> None:
     """nano-claude-code: a minimal Claude Code clone."""
     settings = Settings.load()
+    register_known_models()  # correct stale LiteLLM pricing before any cost/window lookup
     if init_telemetry():
         console.print("[dim]OpenTelemetry enabled.[/dim]")
     load_agents()  # populate AGENT_REGISTRY (built-in + ~/.nano-claude/agents/*.md)

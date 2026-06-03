@@ -41,7 +41,7 @@ Set the API key for whichever provider you target (`DEEPSEEK_API_KEY` for the
 default model, or e.g. `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, …), then:
 
 ```bash
-nano-claude                                   # defaults to deepseek/deepseek-chat
+nano-claude                                   # defaults to deepseek/deepseek-v4-flash
 nano-claude --model gpt-4o
 nano-claude --model anthropic/claude-sonnet-4-6 --max-turns 20
 nano-claude --resume                          # pick a previous session to continue
