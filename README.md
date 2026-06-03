@@ -37,13 +37,13 @@ uv pip install -e ".[dev]"
 
 ## Usage
 
-Set the API key for whichever provider you target (e.g. `ANTHROPIC_API_KEY`,
-`OPENAI_API_KEY`, …), then:
+Set the API key for whichever provider you target (`DEEPSEEK_API_KEY` for the
+default model, or e.g. `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, …), then:
 
 ```bash
-nano-claude                                   # defaults to anthropic/claude-sonnet-4-6
+nano-claude                                   # defaults to deepseek/deepseek-chat
 nano-claude --model gpt-4o
-nano-claude --model deepseek/deepseek-chat --max-turns 20
+nano-claude --model anthropic/claude-sonnet-4-6 --max-turns 20
 nano-claude --resume                          # pick a previous session to continue
 nano-claude --permission-mode acceptEdits     # auto-allow file edits, still prompt for Bash
 ```

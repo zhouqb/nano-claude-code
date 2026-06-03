@@ -65,7 +65,7 @@ class TokenUsage:
 
 @dataclass
 class AgentConfig:
-    model: str = "anthropic/claude-sonnet-4-6"
+    model: str = "deepseek/deepseek-chat"
     max_turns: int = 50
     permission_mode: PermissionMode = PermissionMode.DEFAULT
     auto_compact: bool = True
