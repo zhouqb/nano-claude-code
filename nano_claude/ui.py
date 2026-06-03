@@ -114,6 +114,16 @@ class ReplUI:
         self._end_stream()
         self.console.print("[dim]⊟ Collapsed earlier read/search activity.[/dim]")
 
+    def pause_for_input(self) -> None:
+        """Release the terminal before a blocking prompt (e.g. permission ask).
+
+        The spinner is a rich Live display; leaving it running while
+        prompt_toolkit draws a prompt makes the two fight over the terminal and
+        the prompt looks hung. Stop the spinner and close any open stream first.
+        """
+        self._stop_spinner()
+        self._end_stream()
+
     # --- lifecycle ----------------------------------------------------------
 
     def finish_turn(self) -> None:

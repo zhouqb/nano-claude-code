@@ -173,10 +173,13 @@ def _session_log_path(storage: SessionStorage) -> str:
 
 async def _repl(config: AgentConfig, settings: Settings, state: LoopState) -> None:
     session: PromptSession = PromptSession()
-    prompter = make_cli_prompter(session)
     storage = state.storage
     set_session_log_file(_session_log_path(storage))  # route this session's logs
     ui = ReplUI(console)
+    # Hand the prompter a hook to stop the spinner before it draws — otherwise
+    # the rich Live spinner and prompt_toolkit fight over the terminal and the
+    # permission prompt appears to hang.
+    prompter = make_cli_prompter(session, on_prompt=ui.pause_for_input)
 
     console.print(
         f"[bold cyan]nano-claude-code[/bold cyan] [dim]({config.model}, "
