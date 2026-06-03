@@ -54,7 +54,7 @@ from nano_claude.subagents import AGENT_REGISTRY, load_agents
 from nano_claude.telemetry import init_telemetry, set_session_log_file, shutdown_telemetry
 from nano_claude.ui import ReplUI
 
-DEFAULT_MODEL = os.environ.get("NANO_CLAUDE_MODEL", "anthropic/claude-sonnet-4-6")
+DEFAULT_MODEL = os.environ.get("NANO_CLAUDE_MODEL", "deepseek/deepseek-chat")
 
 console = Console()
 
