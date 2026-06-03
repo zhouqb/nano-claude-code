@@ -119,9 +119,14 @@ async def test_circuit_breaker_disables_autocompact(monkeypatch):
 # --- blocking gate ----------------------------------------------------------
 
 
-async def test_blocking_only_when_autocompact_off():
+async def test_blocking_only_when_autocompact_off(monkeypatch):
     config = AgentConfig(context_window=200_000)  # block at 197k
     state = _state(198_000)
+
+    async def _compact_false(*a, **k):
+        return False
+
+    monkeypatch.setattr("nano_claude.compaction.pipeline.compact_conversation", _compact_false)
 
     # Auto-compact on: never block (Layer 5 owns headroom).
     assert (await run_context_management(state, config, LoopCallbacks())).blocked is False

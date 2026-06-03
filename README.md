@@ -19,6 +19,8 @@ so any provider it supports works through `--model`.
   with allow/deny rules (`Bash(git *)` grammar) persisted to settings.
 - **Sessions** — every turn is written to JSONL; `--resume` reopens a session
   and repairs a mid-turn crash.
+- **One-shot CLI mode** — pass a prompt on the command line or via `--stdin`
+  to run exactly one turn and exit.
 - **Context compaction** — a fixed five-layer pipeline runs before each request:
   budget reduction → snip → microcompact → context collapse → auto-compact.
 - **Extensibility** — hooks, `/command` skills, MCP servers, and plugins, all
@@ -46,7 +48,13 @@ nano-claude --model gpt-4o
 nano-claude --model anthropic/claude-sonnet-4-6 --max-turns 20
 nano-claude --resume                          # pick a previous session to continue
 nano-claude --permission-mode acceptEdits     # auto-allow file edits, still prompt for Bash
+nano-claude "summarize this repository"       # single-turn run, then exit
+echo "review the staged diff" | nano-claude --stdin
 ```
+
+For one-shot runs, if you do not explicitly pass `--permission-mode`, nano
+defaults that invocation to `bypassPermissions`. Pass `--permission-mode
+default` or `--permission-mode acceptEdits` to override that behavior.
 
 The model can also be set via `NANO_CLAUDE_MODEL`.
 
