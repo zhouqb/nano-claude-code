@@ -527,7 +527,7 @@ def _reset_state_for_clear(
 
 @click.command()
 @click.option("--model", default=DEFAULT_MODEL, show_default=True, help="LiteLLM model string.")
-@click.option("--max-turns", default=50, show_default=True, help="Hard cap on loop iterations.")
+@click.option("--max-turns", default=200, show_default=True, help="Hard cap on loop iterations.")
 @click.option(
     "--permission-mode",
     type=click.Choice([m.value for m in PermissionMode]),

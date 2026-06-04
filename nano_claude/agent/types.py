@@ -66,7 +66,7 @@ class TokenUsage:
 @dataclass
 class AgentConfig:
     model: str = "deepseek/deepseek-v4-flash"
-    max_turns: int = 50
+    max_turns: int = 200
     permission_mode: PermissionMode = PermissionMode.DEFAULT
     auto_compact: bool = True
     context_collapse: bool = False  # Layer 4 (experimental); off by default
