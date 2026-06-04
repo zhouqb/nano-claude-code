@@ -360,7 +360,10 @@ async def query_loop(
             ) as req_span:
                 req_span.set_attribute("gen_ai.operation.name", "chat")
                 req_span.set_attribute("gen_ai.request.model", config.model)
-                set_content_attribute(req_span, "gen_ai.prompt", view.messages)
+                # Set the prompt-only view up front so a failed/aborted request
+                # still shows what was sent; overwritten with the full exchange
+                # (prompt + assistant reply) once streaming completes.
+                set_content_attribute(req_span, "gen_ai.messages", view.messages)
                 try:
                     response = await _call_with_retry(
                         lambda v=view: litellm.acompletion(
@@ -405,10 +408,15 @@ async def query_loop(
                     record_input_tokens(state, last_chunk)
                     _annotate_request_span(req_span, last_chunk)
                 req_span.set_attribute("gen_ai.response.tool_call_count", len(tool_calls))
-                completion: dict[str, Any] = {"content": "".join(text_parts)}
+                # Append the assistant reply as the final message so the span
+                # carries the whole exchange in one ordered, reviewable field.
+                assistant_msg: dict[str, Any] = {
+                    "role": "assistant",
+                    "content": "".join(text_parts),
+                }
                 if tool_calls:
-                    completion["tool_calls"] = _to_assistant_tool_calls(tool_calls)
-                set_content_attribute(req_span, "gen_ai.completion", completion)
+                    assistant_msg["tool_calls"] = _to_assistant_tool_calls(tool_calls)
+                set_content_attribute(req_span, "gen_ai.messages", [*view.messages, assistant_msg])
             state.turn_count += 1
 
             final_text = "".join(text_parts)
