@@ -27,6 +27,7 @@ so any provider it supports works through `--model`.
   wired at startup.
 - **Subagents** — delegate a noisy exploration to an isolated agent via `Task`;
   only its final summary returns to the parent.
+- **Observability** — opt-in OpenTelemetry traces (OTLP) and per-session logs.
 
 ## Setup
 
@@ -132,6 +133,39 @@ file:line references.
 ```
 
 **Plugins** bundle hooks, skills, and MCP servers behind one `manifest.json`.
+
+## Observability
+
+Telemetry is opt-in and off by default. With the `otel` extra installed (already
+in `[dev]`, otherwise `uv pip install -e ".[otel]"`), set `NANO_CLAUDE_TELEMETRY=1`
+to emit OpenTelemetry traces over OTLP/HTTP — `agent.turn` → `chat <model>` (with
+GenAI usage attributes) → `tool <name>` spans:
+
+```bash
+NANO_CLAUDE_TELEMETRY=1 nano-claude
+```
+
+Spans export to `http://localhost:4318` by default; override with the standard
+`OTEL_EXPORTER_OTLP_ENDPOINT`. Point them at any OTLP backend — the quickest way
+to get a trace viewer is [Jaeger](https://www.jaegertracing.io/) all-in-one,
+which ingests OTLP natively and serves a UI on port 16686:
+
+```bash
+docker run --rm --name jaeger -p 16686:16686 -p 4318:4318 -p 4317:4317 \
+  jaegertracing/all-in-one:latest
+```
+
+No Docker? Grab the [Jaeger release binary](https://github.com/jaegertracing/jaeger/releases)
+for your platform and run `./jaeger` — it opens the same ports.
+
+Then run nano-claude with telemetry on and open **http://localhost:16686**, pick
+the `nano-claude-code` service, and *Find Traces*. Spans batch and flush at exit,
+so quit cleanly to be sure they all land.
+
+Logs are a separate signal: by default they go to a per-session file
+(`~/.nano-claude/projects/<cwd>/<session-id>.log.jsonl`), not the OTLP backend.
+See [`CLAUDE.md`](./CLAUDE.md) for the full set of `NANO_CLAUDE_TELEMETRY_*` knobs
+(console exporters, logs-over-OTLP, etc.).
 
 ## Development
 
