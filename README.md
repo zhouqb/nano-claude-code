@@ -179,7 +179,7 @@ reply appended as the last message — in a single `gen_ai.messages` field; each
 (`nano_claude.tool.arguments` / `.output` / `.error`). These payloads can be
 large or sensitive — set `NANO_CLAUDE_TELEMETRY_CAPTURE_CONTENT=0` to drop them,
 or `NANO_CLAUDE_TELEMETRY_MAX_CONTENT_LEN` to change the truncation cap (default
-16384 chars).
+16384 chars, applied per string value so the serialized JSON stays valid).
 
 Spans batch and flush at exit, so quit nano-claude cleanly (`/quit` or Ctrl-D) if
 a trace hasn't appeared yet, then refresh.

@@ -60,8 +60,10 @@ def _enabled(name: str) -> bool:
 # Capturing prompt/tool content on spans is useful for debugging but the payloads
 # can be large and may carry sensitive data, so it follows the OTel GenAI
 # convention of being opt-out: on by default, silenced with
-# ``NANO_CLAUDE_TELEMETRY_CAPTURE_CONTENT=0``. Values are truncated to keep spans
-# a sane size (override with ``NANO_CLAUDE_TELEMETRY_MAX_CONTENT_LEN``).
+# ``NANO_CLAUDE_TELEMETRY_CAPTURE_CONTENT=0``. Long strings are truncated to keep
+# spans a sane size (override with ``NANO_CLAUDE_TELEMETRY_MAX_CONTENT_LEN``).
+# Note the cap applies per string value, not to the whole serialized blob — a
+# message list's effective budget is roughly this times the number of messages.
 _DEFAULT_MAX_CONTENT_LEN = 16384
 
 
@@ -82,27 +84,51 @@ def _max_content_len() -> int:
     return _DEFAULT_MAX_CONTENT_LEN
 
 
+def _truncate_str(s: str, limit: int) -> str:
+    if len(s) > limit:
+        return s[:limit] + f"…[truncated {len(s) - limit} chars]"
+    return s
+
+
+def _truncate_leaves(obj: Any, limit: int) -> Any:
+    """Recursively cap every string leaf in a JSON-ish structure.
+
+    Truncating per-leaf (rather than slicing the serialized blob) keeps the
+    overall JSON well-formed, so a backend like Jaeger can still parse and render
+    it as a structure instead of falling back to a raw escaped string.
+    """
+    if isinstance(obj, str):
+        return _truncate_str(obj, limit)
+    if isinstance(obj, dict):
+        return {k: _truncate_leaves(v, limit) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_truncate_leaves(v, limit) for v in obj]
+    return obj
+
+
 def set_content_attribute(span, key: str, value: Any) -> None:
     """Set a (possibly large) content attribute on ``span``, honoring the
     capture toggle and truncating to the configured max length.
 
     ``value`` may be a string or any JSON-serializable object; objects are
-    rendered to compact JSON. No-op when content capture is disabled or the span
-    isn't recording (e.g. telemetry off).
+    rendered to compact JSON. For structured values the limit is applied
+    *per string leaf* before serialization, so the emitted JSON stays valid even
+    when truncated; for a plain string it caps the whole value. No-op when
+    content capture is disabled or the span isn't recording (e.g. telemetry off).
     """
     if not capture_content() or not getattr(span, "is_recording", lambda: False)():
         return
-    if not isinstance(value, str):
-        try:
-            import json
-
-            value = json.dumps(value, default=str, ensure_ascii=False)
-        except (TypeError, ValueError):
-            value = str(value)
     limit = _max_content_len()
-    if len(value) > limit:
-        value = value[:limit] + f"…[truncated {len(value) - limit} chars]"
-    span.set_attribute(key, value)
+    if isinstance(value, str):
+        span.set_attribute(key, _truncate_str(value, limit))
+        return
+    import json
+
+    try:
+        rendered = json.dumps(_truncate_leaves(value, limit), default=str, ensure_ascii=False)
+    except (TypeError, ValueError):
+        rendered = _truncate_str(str(value), limit)
+    span.set_attribute(key, rendered)
 
 
 def init_telemetry() -> bool:
