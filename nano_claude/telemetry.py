@@ -57,6 +57,54 @@ def _enabled(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in _TRUTHY
 
 
+# Capturing prompt/tool content on spans is useful for debugging but the payloads
+# can be large and may carry sensitive data, so it follows the OTel GenAI
+# convention of being opt-out: on by default, silenced with
+# ``NANO_CLAUDE_TELEMETRY_CAPTURE_CONTENT=0``. Values are truncated to keep spans
+# a sane size (override with ``NANO_CLAUDE_TELEMETRY_MAX_CONTENT_LEN``).
+_DEFAULT_MAX_CONTENT_LEN = 16384
+
+
+def capture_content() -> bool:
+    """Whether to record prompt/tool payloads as span attributes (default on)."""
+    return os.environ.get("NANO_CLAUDE_TELEMETRY_CAPTURE_CONTENT", "1").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
+
+
+def _max_content_len() -> int:
+    raw = os.environ.get("NANO_CLAUDE_TELEMETRY_MAX_CONTENT_LEN", "").strip()
+    if raw.isdigit():
+        return int(raw)
+    return _DEFAULT_MAX_CONTENT_LEN
+
+
+def set_content_attribute(span, key: str, value: Any) -> None:
+    """Set a (possibly large) content attribute on ``span``, honoring the
+    capture toggle and truncating to the configured max length.
+
+    ``value`` may be a string or any JSON-serializable object; objects are
+    rendered to compact JSON. No-op when content capture is disabled or the span
+    isn't recording (e.g. telemetry off).
+    """
+    if not capture_content() or not getattr(span, "is_recording", lambda: False)():
+        return
+    if not isinstance(value, str):
+        try:
+            import json
+
+            value = json.dumps(value, default=str, ensure_ascii=False)
+        except (TypeError, ValueError):
+            value = str(value)
+    limit = _max_content_len()
+    if len(value) > limit:
+        value = value[:limit] + f"…[truncated {len(value) - limit} chars]"
+    span.set_attribute(key, value)
+
+
 def init_telemetry() -> bool:
     """Install a real OTel provider when telemetry is enabled. Idempotent.
 
