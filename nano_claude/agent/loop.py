@@ -38,7 +38,7 @@ from nano_claude.permissions.manager import (
 )
 from nano_claude.permissions.settings import Settings
 from nano_claude.session.storage import session_output_dir
-from nano_claude.telemetry import log, tracer
+from nano_claude.telemetry import log, set_content_attribute, tracer
 from nano_claude.tools.base import ToolContext, ToolResult
 from nano_claude.tools.registry import get_tool, get_tools
 
@@ -225,6 +225,7 @@ async def _run_call(
     name = plan.tool.name
     with tracer.start_as_current_span(f"tool {name}", kind=SpanKind.INTERNAL) as span:
         span.set_attribute("nano_claude.tool.name", name)
+        set_content_attribute(span, "nano_claude.tool.arguments", plan.args_dict or {})
         if callbacks.on_tool_start:
             callbacks.on_tool_start(name, plan.args_dict or {})
         try:
@@ -234,7 +235,9 @@ async def _run_call(
             span.set_status(Status(StatusCode.ERROR, str(exc)))
             result = ToolResult.fail(f"Tool raised an exception: {exc}")
         span.set_attribute("nano_claude.tool.is_error", result.is_error)
+        set_content_attribute(span, "nano_claude.tool.output", result.output)
         if result.is_error:
+            span.set_attribute("nano_claude.tool.error", result.error or "tool error")
             span.set_status(Status(StatusCode.ERROR, result.error or "tool error"))
         if callbacks.on_tool_end:
             callbacks.on_tool_end(name, result)
@@ -357,6 +360,10 @@ async def query_loop(
             ) as req_span:
                 req_span.set_attribute("gen_ai.operation.name", "chat")
                 req_span.set_attribute("gen_ai.request.model", config.model)
+                # Set the prompt-only view up front so a failed/aborted request
+                # still shows what was sent; overwritten with the full exchange
+                # (prompt + assistant reply) once streaming completes.
+                set_content_attribute(req_span, "gen_ai.messages", view.messages)
                 try:
                     response = await _call_with_retry(
                         lambda v=view: litellm.acompletion(
@@ -401,6 +408,15 @@ async def query_loop(
                     record_input_tokens(state, last_chunk)
                     _annotate_request_span(req_span, last_chunk)
                 req_span.set_attribute("gen_ai.response.tool_call_count", len(tool_calls))
+                # Append the assistant reply as the final message so the span
+                # carries the whole exchange in one ordered, reviewable field.
+                assistant_msg: dict[str, Any] = {
+                    "role": "assistant",
+                    "content": "".join(text_parts),
+                }
+                if tool_calls:
+                    assistant_msg["tool_calls"] = _to_assistant_tool_calls(tool_calls)
+                set_content_attribute(req_span, "gen_ai.messages", [*view.messages, assistant_msg])
             state.turn_count += 1
 
             final_text = "".join(text_parts)

@@ -73,8 +73,13 @@ async def test_tool_call_emits_span(exporters):
     assert out == "ok"
     tool_spans = [s for s in spans.get_finished_spans() if s.name == "tool fake"]
     assert len(tool_spans) == 1
-    assert tool_spans[0].attributes["nano_claude.tool.name"] == "fake"
-    assert tool_spans[0].attributes["nano_claude.tool.is_error"] is False
+    attrs = tool_spans[0].attributes
+    assert attrs["nano_claude.tool.name"] == "fake"
+    assert attrs["nano_claude.tool.is_error"] is False
+    # Args + output are captured by default.
+    assert attrs["nano_claude.tool.arguments"] == '{"path": "x"}'
+    assert attrs["nano_claude.tool.output"] == "ok"
+    assert "nano_claude.tool.error" not in attrs
 
 
 async def test_failed_tool_marks_span_error(exporters):
@@ -92,6 +97,37 @@ async def test_failed_tool_marks_span_error(exporters):
     tool_spans = [s for s in spans.get_finished_spans() if s.name == "tool fake"]
     assert tool_spans[0].status.status_code is StatusCode.ERROR
     assert tool_spans[0].attributes["nano_claude.tool.is_error"] is True
+    assert tool_spans[0].attributes["nano_claude.tool.error"] == "boom"
+
+
+async def test_content_capture_can_be_disabled(exporters, monkeypatch):
+    monkeypatch.setenv("NANO_CLAUDE_TELEMETRY_CAPTURE_CONTENT", "0")
+    spans, _ = exporters
+    plan = _CallPlan(tool=_FakeTool(), args_model=None, args_dict={"path": "x"})
+
+    await _run_call(plan, _context(), LoopCallbacks(), session_id="sess")
+
+    attrs = [s for s in spans.get_finished_spans() if s.name == "tool fake"][0].attributes
+    assert "nano_claude.tool.arguments" not in attrs
+    assert "nano_claude.tool.output" not in attrs
+
+
+def test_set_content_attribute_truncates(monkeypatch):
+    monkeypatch.setenv("NANO_CLAUDE_TELEMETRY_MAX_CONTENT_LEN", "10")
+
+    class _Span:
+        def __init__(self) -> None:
+            self.attrs: dict = {}
+
+        def is_recording(self) -> bool:
+            return True
+
+        def set_attribute(self, key, value) -> None:  # noqa: ANN001
+            self.attrs[key] = value
+
+    span = _Span()
+    telemetry.set_content_attribute(span, "k", "x" * 50)
+    assert span.attrs["k"].startswith("xxxxxxxxxx…[truncated 40 chars]")
 
 
 async def test_tool_call_emits_log(exporters):

@@ -173,6 +173,14 @@ for your platform and run `./jaeger` — it opens the same ports.
    expands into its `chat <model>` and `tool <name>` children. Click **Find
    Traces** again to refresh after later turns.
 
+Each `chat` span carries the full exchange — prompt messages plus the assistant
+reply appended as the last message — in a single `gen_ai.messages` field; each
+`tool` span carries its arguments, output, and error
+(`nano_claude.tool.arguments` / `.output` / `.error`). These payloads can be
+large or sensitive — set `NANO_CLAUDE_TELEMETRY_CAPTURE_CONTENT=0` to drop them,
+or `NANO_CLAUDE_TELEMETRY_MAX_CONTENT_LEN` to change the truncation cap (default
+16384 chars).
+
 Spans batch and flush at exit, so quit nano-claude cleanly (`/quit` or Ctrl-D) if
 a trace hasn't appeared yet, then refresh.
 
