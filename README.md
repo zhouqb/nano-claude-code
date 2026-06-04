@@ -158,9 +158,23 @@ docker run --rm --name jaeger -p 16686:16686 -p 4318:4318 -p 4317:4317 \
 No Docker? Grab the [Jaeger release binary](https://github.com/jaegertracing/jaeger/releases)
 for your platform and run `./jaeger` — it opens the same ports.
 
-Then run nano-claude with telemetry on and open **http://localhost:16686**, pick
-the `nano-claude-code` service, and *Find Traces*. Spans batch and flush at exit,
-so quit cleanly to be sure they all land.
+### Viewing traces
+
+1. Start a backend (the Jaeger command above) and leave it running.
+2. Run nano-claude with telemetry on and have a conversation — tool-using turns
+   produce the richest spans:
+
+   ```bash
+   NANO_CLAUDE_TELEMETRY=1 nano-claude
+   ```
+
+3. Open the Jaeger UI at **http://localhost:16686**, pick the `nano-claude-code`
+   service in the *Service* dropdown, and click **Find Traces**. Each `agent.turn`
+   expands into its `chat <model>` and `tool <name>` children. Click **Find
+   Traces** again to refresh after later turns.
+
+Spans batch and flush at exit, so quit nano-claude cleanly (`/quit` or Ctrl-D) if
+a trace hasn't appeared yet, then refresh.
 
 Logs are a separate signal: by default they go to a per-session file
 (`~/.nano-claude/projects/<cwd>/<session-id>.log.jsonl`), not the OTLP backend.
