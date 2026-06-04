@@ -130,6 +130,36 @@ def test_set_content_attribute_truncates(monkeypatch):
     assert span.attrs["k"].startswith("xxxxxxxxxx…[truncated 40 chars]")
 
 
+def test_set_content_attribute_structured_stays_valid_json(monkeypatch):
+    """A truncated structured value must remain parseable JSON (per-leaf cap)."""
+    import json
+
+    monkeypatch.setenv("NANO_CLAUDE_TELEMETRY_MAX_CONTENT_LEN", "10")
+
+    class _Span:
+        def __init__(self) -> None:
+            self.attrs: dict = {}
+
+        def is_recording(self) -> bool:
+            return True
+
+        def set_attribute(self, key, value) -> None:  # noqa: ANN001
+            self.attrs[key] = value
+
+    span = _Span()
+    messages = [
+        {"role": "system", "content": "s" * 100},
+        {"role": "user", "content": "u" * 100},
+        {"role": "assistant", "content": None, "tool_calls": [{"id": "1"}]},
+    ]
+    telemetry.set_content_attribute(span, "gen_ai.messages", messages)
+
+    parsed = json.loads(span.attrs["gen_ai.messages"])  # must not raise
+    assert [m["role"] for m in parsed] == ["system", "user", "assistant"]
+    assert parsed[0]["content"].startswith("ssssssssss…[truncated 90 chars]")
+    assert parsed[2]["content"] is None  # non-string leaves pass through
+
+
 async def test_tool_call_emits_log(exporters):
     _, logs = exporters
     plan = _CallPlan(tool=_FakeTool(), args_model=None, args_dict={})
