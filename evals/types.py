@@ -55,6 +55,9 @@ class RolloutResult:
     duration_s: float = 0.0
     error: str | None = None
     log_path: str | None = None
+    # Whether a working test environment was provided to the agent this run
+    # (host-venv backend): True ready, False setup failed, None not attempted.
+    env_ready: bool | None = None
 
 
 @dataclass

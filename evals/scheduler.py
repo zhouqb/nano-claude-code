@@ -58,6 +58,7 @@ def run_rollouts(
     log_dir: Path,
     num_workers: int,
     on_result: Callable[[RolloutResult], None] | None = None,
+    env_provider=None,
 ) -> list[RolloutResult]:
     """Run every task, concurrently across repo-partitioned workers.
 
@@ -73,7 +74,7 @@ def run_rollouts(
 
     def worker(bucket: list[Task]) -> None:
         for task in bucket:
-            result = run_task(task, cache, cfg, log_dir)
+            result = run_task(task, cache, cfg, log_dir, env_provider)
             with lock:
                 results.append(result)
                 if on_result is not None:

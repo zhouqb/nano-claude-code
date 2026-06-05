@@ -20,6 +20,22 @@ def _slug(repo: str) -> str:
     return repo.replace("/", "__")
 
 
+# Build artifacts an editable install (host-venv backend) drops in the clone.
+# Seeded into .git/info/exclude so they never leak into the captured patch.
+_LOCAL_EXCLUDE = ["*.egg-info/", ".eggs/", "build/", "__pycache__/", ".pytest_cache/"]
+
+
+def _seed_local_exclude(repo_dir: Path) -> None:
+    exclude = repo_dir / ".git" / "info" / "exclude"
+    try:
+        exclude.parent.mkdir(parents=True, exist_ok=True)
+        existing = exclude.read_text() if exclude.exists() else ""
+        if "# nano-eval" not in existing:
+            exclude.write_text(existing + "\n# nano-eval\n" + "\n".join(_LOCAL_EXCLUDE) + "\n")
+    except OSError:
+        pass
+
+
 class GitError(RuntimeError):
     pass
 
@@ -61,6 +77,7 @@ class RepoCache:
             timeout=1800,
             check=True,
         )
+        _seed_local_exclude(path)
         return path
 
     def checkout(self, repo: str, base_commit: str) -> Path:

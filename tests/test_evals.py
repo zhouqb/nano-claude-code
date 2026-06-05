@@ -106,6 +106,39 @@ def test_strip_paths_noop_when_empty():
     assert strip_paths(SAMPLE_DIFF, set()) == SAMPLE_DIFF
 
 
+# --- host-venv backend --------------------------------------------------------
+
+
+def _vtask(repo: str, version: str) -> Task:
+    return Task("x", repo, "c", "p", extra={"repo": repo, "version": version})
+
+
+def test_is_feasible_pure_python_vs_compiled_and_old_python():
+    from evals.venv_env import is_feasible
+
+    # sympy 1.9: Python 3.9, pure pip -> feasible
+    assert is_feasible(_vtask("sympy/sympy", "1.9")) is True
+    # scikit-learn IS a native extension (own install compiles) -> not feasible
+    assert is_feasible(_vtask("scikit-learn/scikit-learn", "1.3")) is False
+    # matplotlib likewise compiles itself -> not feasible
+    assert is_feasible(_vtask("matplotlib/matplotlib", "3.7")) is False
+    # django 2.2: Python 3.5 -> no arm64 interpreter -> not feasible
+    assert is_feasible(_vtask("django/django", "2.2")) is False
+    # xarray only *depends on* numpy/pandas (wheels) -> feasible despite that
+    assert is_feasible(_vtask("pydata/xarray", "0.12")) is True
+
+
+def test_make_env_provider_backends():
+    from evals.venv_env import VenvEnvProvider, make_env_provider
+
+    assert make_env_provider("host", Path("/tmp/x")) is None
+    assert isinstance(make_env_provider("host-venv", Path("/tmp/x")), VenvEnvProvider)
+
+
+def test_verified_adapter_registered():
+    assert "swe-bench-verified" in available()
+
+
 # --- registry -----------------------------------------------------------------
 
 
