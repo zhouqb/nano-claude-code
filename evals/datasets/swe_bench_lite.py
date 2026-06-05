@@ -1,4 +1,4 @@
-"""SWE-bench Lite adapter: HF dataset loading + official Docker grading."""
+"""SWE-bench adapters (Lite + Verified): HF loading + official Docker grading."""
 
 from __future__ import annotations
 
@@ -11,10 +11,14 @@ from evals.prompts import swe_bench_prompt
 from evals.types import EvalStatus, InstanceEval, Task
 
 
-class SweBenchLiteAdapter:
-    """Loads SWE-bench Lite and grades via ``swebench.harness.run_evaluation``."""
+class SweBenchAdapter:
+    """Base: loads a SWE-bench dataset and grades via ``run_evaluation``.
 
-    name = "swe-bench-lite"
+    Concrete subclasses set ``name`` + ``dataset_name`` (Lite/Verified share all
+    logic — same schema, same harness).
+    """
+
+    name = "swe-bench"
     dataset_name = "SWE-bench/SWE-bench_Lite"
     split = "test"
 
@@ -31,7 +35,13 @@ class SweBenchLiteAdapter:
                     repo=row["repo"],
                     base_commit=row["base_commit"],
                     prompt=swe_bench_prompt(row["repo"], row["problem_statement"]),
-                    extra={"test_patch": row.get("test_patch", "")},
+                    # repo+version drive the host-venv env spec lookup; test_patch
+                    # drives test-file stripping in the rollout.
+                    extra={
+                        "test_patch": row.get("test_patch", ""),
+                        "version": str(row.get("version", "")),
+                        "repo": row["repo"],
+                    },
                 )
             )
         return tasks
@@ -115,3 +125,13 @@ class SweBenchLiteAdapter:
                 detail=verdict.get("tests_status", {}),
             )
         return out
+
+
+class SweBenchLiteAdapter(SweBenchAdapter):
+    name = "swe-bench-lite"
+    dataset_name = "SWE-bench/SWE-bench_Lite"
+
+
+class SweBenchVerifiedAdapter(SweBenchAdapter):
+    name = "swe-bench-verified"
+    dataset_name = "SWE-bench/SWE-bench_Verified"

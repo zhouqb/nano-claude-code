@@ -7,22 +7,43 @@ import signal
 import subprocess
 import time
 from pathlib import Path
+from typing import Protocol
 
 from evals.config import RolloutConfig
 from evals.repo_cache import RepoCache, changed_paths, strip_paths
 from evals.types import RolloutResult, RolloutStatus, Task
 
 
-def _run_agent(task: Task, repo_dir: Path, cfg: RolloutConfig, log_path: Path) -> None:
+class EnvProvider(Protocol):
+    """Prepares a per-task environment (e.g. a venv) for the agent.
+
+    Returns ``(extra_env, prompt_suffix)``, or ``None`` if the environment could
+    not be set up (the agent then runs without it).
+    """
+
+    def prepare(self, task: Task, repo_dir: Path) -> tuple[dict[str, str], str] | None: ...
+
+
+def _run_agent(
+    task: Task,
+    repo_dir: Path,
+    cfg: RolloutConfig,
+    log_path: Path,
+    extra_env: dict[str, str] | None = None,
+    prompt_suffix: str = "",
+) -> None:
     """Invoke the CLI in one-shot mode, killing the whole group on timeout.
 
     nano-claude's one-shot mode defaults to ``bypassPermissions`` so the agent
     runs Bash/Edit/Write without prompting. We disable memory so runs stay
     isolated and reproducible, and route stdout/stderr to a per-task log.
+    ``extra_env`` (e.g. a venv on PATH) and ``prompt_suffix`` (the verify-tests
+    instruction) come from the rollout's env provider.
     """
     env = {
         **os.environ,
         "NANO_CLAUDE_DISABLE_MEMORY": "1",
+        **(extra_env or {}),
     }
     cmd = [
         cfg.resolved_bin(),
@@ -48,7 +69,7 @@ def _run_agent(task: Task, repo_dir: Path, cfg: RolloutConfig, log_path: Path) -
             start_new_session=True,
         )
         try:
-            proc.communicate(input=task.prompt, timeout=cfg.task_timeout)
+            proc.communicate(input=task.prompt + prompt_suffix, timeout=cfg.task_timeout)
         except subprocess.TimeoutExpired:
             _kill_group(proc)
             raise
@@ -67,7 +88,13 @@ def _kill_group(proc: subprocess.Popen) -> None:
         pass
 
 
-def run_task(task: Task, cache: RepoCache, cfg: RolloutConfig, log_dir: Path) -> RolloutResult:
+def run_task(
+    task: Task,
+    cache: RepoCache,
+    cfg: RolloutConfig,
+    log_dir: Path,
+    env_provider: EnvProvider | None = None,
+) -> RolloutResult:
     """Check out, run the agent, capture the diff, and reset the clone."""
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / f"{task.instance_id}.log"
@@ -88,10 +115,23 @@ def run_task(task: Task, cache: RepoCache, cfg: RolloutConfig, log_dir: Path) ->
             duration_s=elapsed(),
         )
 
+    # Provision a test environment for the agent (host-venv backend). Build it
+    # after checkout (it installs the project editable from the clone).
+    extra_env: dict[str, str] = {}
+    prompt_suffix = ""
+    env_ready: bool | None = None
+    if env_provider is not None:
+        prepared = env_provider.prepare(task, repo_dir)
+        if prepared is None:
+            env_ready = False
+        else:
+            extra_env, prompt_suffix = prepared
+            env_ready = True
+
     status = RolloutStatus.OK
     error: str | None = None
     try:
-        _run_agent(task, repo_dir, cfg, log_path)
+        _run_agent(task, repo_dir, cfg, log_path, extra_env, prompt_suffix)
     except subprocess.TimeoutExpired:
         status = RolloutStatus.TIMEOUT
         error = f"agent exceeded {cfg.task_timeout}s"
@@ -128,6 +168,7 @@ def run_task(task: Task, cache: RepoCache, cfg: RolloutConfig, log_dir: Path) ->
         duration_s=elapsed(),
         error=error,
         log_path=str(log_path),
+        env_ready=env_ready,
     )
 
 

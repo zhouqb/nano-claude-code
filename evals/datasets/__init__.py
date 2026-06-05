@@ -35,4 +35,11 @@ def _swe_bench_lite() -> DatasetAdapter:
     return SweBenchLiteAdapter()
 
 
+def _swe_bench_verified() -> DatasetAdapter:
+    from evals.datasets.swe_bench_lite import SweBenchVerifiedAdapter
+
+    return SweBenchVerifiedAdapter()
+
+
 register("swe-bench-lite", _swe_bench_lite)
+register("swe-bench-verified", _swe_bench_verified)

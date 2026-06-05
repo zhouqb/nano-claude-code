@@ -22,6 +22,7 @@ from evals.repo_cache import RepoCache
 from evals.report import aggregate, build_results, print_summary, write_results
 from evals.scheduler import MAX_WORKERS, run_rollouts
 from evals.types import RolloutResult, RolloutStatus, Task
+from evals.venv_env import filter_feasible, make_env_provider
 
 console = Console()
 
@@ -115,6 +116,14 @@ def _load_existing(records_path: Path) -> dict[str, RolloutResult]:
 )
 @click.option("--resume", is_flag=True, help="Skip instances already in the output dir's records.")
 @click.option(
+    "--rollout-backend",
+    type=click.Choice(["host", "host-venv"]),
+    default="host",
+    show_default=True,
+    help="host: bare clone. host-venv: per-(repo,version) venv so the agent can run tests "
+    "(restricts to the feasible instance subset).",
+)
+@click.option(
     "--no-strip-test-changes",
     is_flag=True,
     help="Keep agent edits to test files in the captured patch.",
@@ -147,6 +156,7 @@ def main(
     repo_root: str,
     output: str | None,
     resume: bool,
+    rollout_backend: str,
     no_strip_test_changes: bool,
     nano_bin: str,
     do_eval: bool,
@@ -175,7 +185,15 @@ def main(
         cfg.model = model
 
     console.print(f"[bold]Loading[/bold] {dataset}...")
-    tasks = _select(adapter.load(), instance_ids, repos, sample, seed)
+    all_tasks = adapter.load()
+    env_provider = make_env_provider(rollout_backend, Path(repo_root).parent / "venvs")
+    if rollout_backend == "host-venv":
+        feasible = filter_feasible(all_tasks)
+        console.print(
+            f"[dim]host-venv: {len(feasible)}/{len(all_tasks)} instances feasible (rest skipped).[/dim]"
+        )
+        all_tasks = feasible
+    tasks = _select(all_tasks, instance_ids, repos, sample, seed)
     if not tasks:
         raise click.ClickException("No tasks selected.")
 
@@ -202,7 +220,9 @@ def main(
         console.print(f"  [{marker}] {result.instance_id} ({result.duration_s:.0f}s)")
 
     try:
-        new_results = run_rollouts(pending, cfg, cache, log_dir, workers, on_result=persist)
+        new_results = run_rollouts(
+            pending, cfg, cache, log_dir, workers, on_result=persist, env_provider=env_provider
+        )
     finally:
         records_file.close()
 
