@@ -34,3 +34,13 @@ def test_system_prompt_includes_engineering_principles(tmp_path):
     # run tests around changed code; add tests for new code
     assert "run the tests that cover" in prompt
     assert "write unit tests" in prompt
+    # verification extension: lint/typecheck + discover commands
+    assert "lint" in prompt
+    assert "discover it from the repo" in prompt
+
+
+def test_system_prompt_includes_conventions(tmp_path):
+    prompt = build_system_prompt(str(tmp_path)).lower()
+    assert "follow the conventions" in prompt
+    assert "already a dependency" in prompt
+    assert "nothing more, nothing less" in prompt
