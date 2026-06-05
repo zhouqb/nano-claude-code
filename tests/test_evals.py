@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 import json
 import subprocess
 from pathlib import Path
@@ -137,6 +138,65 @@ def test_make_env_provider_backends():
 
 def test_verified_adapter_registered():
     assert "swe-bench-verified" in available()
+
+
+# --- analyze ------------------------------------------------------------------
+
+
+def _write_csv(path, rows):
+    with path.open("w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+        w.writeheader()
+        w.writerows(rows)
+
+
+def test_analyze_aggregate_and_merge(tmp_path):
+    from evals.analyze import aggregate, merge_suggestions
+
+    rows = [
+        {"instance_id": "a-1", "repo": "o/a", "resolved": "True", "failure_category": "",
+         "env_ready": "True", "improvement_suggestion": ""},
+        {"instance_id": "a-2", "repo": "o/a", "resolved": "False", "failure_category": "tests_failed",
+         "env_ready": "True", "improvement_suggestion": ""},
+        {"instance_id": "b-1", "repo": "o/b", "resolved": "False", "failure_category": "empty_patch",
+         "env_ready": "False", "improvement_suggestion": ""},
+    ]
+    csv_path = tmp_path / "analysis.csv"
+    _write_csv(csv_path, rows)
+
+    summary = aggregate(rows)
+    assert summary["resolved_instances"] == 1
+    assert summary["resolve_rate"] == round(1 / 3, 4)
+    assert summary["failure_categories"] == {"tests_failed": 1, "empty_patch": 1}
+    assert summary["env_ready_counts"] == {"True": 2, "False": 1}
+    assert summary["per_repo"]["o/a"]["resolved"] == 1
+
+    (tmp_path / "sugg.json").write_text(json.dumps({
+        "a-2": {"root_cause": "rc", "improvement_suggestion": "do X"},
+    }))
+    merged, over = merge_suggestions(tmp_path, tmp_path / "sugg.json")
+    assert merged == 1 and over == []
+    by_id = {r["instance_id"]: r for r in csv.DictReader(csv_path.open())}
+    assert by_id["a-2"]["root_cause"] == "rc"
+    assert by_id["a-2"]["improvement_suggestion"] == "do X"
+    assert by_id["a-1"]["improvement_suggestion"] == ""  # untouched
+
+
+def test_analyze_build_review(tmp_path):
+    from evals.analyze import build_review
+
+    (tmp_path / "failures" / "a-2").mkdir(parents=True)
+    (tmp_path / "failures" / "a-2" / "model_patch.diff").write_text(
+        "diff --git a/src/x.py b/src/x.py\n+CHANGED\n"
+    )
+    (tmp_path / "failures" / "a-2" / "test_output.txt").write_text("E   AssertionError: nope\n")
+    rows = [
+        {"instance_id": "a-1", "repo": "o/a", "resolved": "True", "failure_category": ""},
+        {"instance_id": "a-2", "repo": "o/a", "resolved": "False", "failure_category": "tests_failed"},
+    ]
+    md = build_review(tmp_path, rows).read_text()
+    assert "a-2" in md and "CHANGED" in md and "AssertionError" in md
+    assert "a-1" not in md  # passes aren't in the review
 
 
 # --- registry -----------------------------------------------------------------

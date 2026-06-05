@@ -80,6 +80,41 @@ with `ANTHROPIC_API_KEY`).
 - `logs/<instance_id>.log` — agent stdout/stderr per task.
 - `swebench_report/` — the harness's own report JSON.
 
+## Rollout backends
+
+`--rollout-backend` controls the environment the agent runs in:
+
+- `host` (default) — bare clone, no test environment. The agent reasons without
+  running tests.
+- `host-venv` — a per-`(repo, version)` virtualenv (built with `uv` from
+  swebench's own install recipe, project installed editable so edits are live) so
+  the agent **can run tests to verify its fix**. Restricted to the feasible
+  subset: Python ≥3.8 and the repo isn't itself a native extension
+  (numpy/scipy/pandas *dependencies* are fine — pip fetches wheels). Builds are
+  cached and fall back gracefully; `env_ready` records which cases got an env.
+
+## Failure studies (`failure_study` + `analyze`)
+
+For a deeper, sequential study with per-case artifacts:
+
+```bash
+# Collect: run each sampled case one at a time, grade it, persist the git diff,
+# agent transcript, and harness test output. (no auto-analysis)
+python -m evals.failure_study --dataset swe-bench-verified \
+    --rollout-backend host-venv --sample 50 --output runs/study
+
+# Analyze: aggregate + build a per-failure review bundle for a human/strong model
+python -m evals.analyze runs/study           # -> analysis_summary.json, failures_review.md
+python -m evals.analyze runs/study --merge-suggestions suggestions.json
+```
+
+`failure_study` writes `analysis.csv` (one row per case, with an empty
+`improvement_suggestion` column). `analyze` aggregates it, bundles each failure's
+diff + failing tests + error output + transcript into `failures_review.md`, and
+can fold externally-authored `{instance_id: {root_cause, improvement_suggestion}}`
+back into the CSV. The suggestion-writing itself is deliberately left to a human
+or strong model, not an automated small-model call.
+
 ## Adding a dataset
 
 Implement `DatasetAdapter` (`load() -> list[Task]` and `evaluate(...)`) in
