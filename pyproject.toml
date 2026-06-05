@@ -26,8 +26,16 @@ otel = [
     "opentelemetry-sdk>=1.20.0",
     "opentelemetry-exporter-otlp-proto-http>=1.20.0",
 ]
+# The offline SWE-bench evaluation pipeline (evals/) needs the HuggingFace
+# `datasets` loader and the official `swebench` harness (Docker-based grading).
+# Kept optional so the agent runtime stays lean: `pip install -e ".[evals]"`.
+evals = [
+    "datasets>=2.19",
+    "swebench>=3.0",
+]
 dev = [
     "nano-claude[otel]",
+    "nano-claude[evals]",
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "ruff>=0.4",
