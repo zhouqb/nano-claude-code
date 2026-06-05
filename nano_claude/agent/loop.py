@@ -47,9 +47,10 @@ RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 529}
 MAX_RETRIES = 3
 BASE_DELAY_S = 1.0
 
-# TodoWrite staleness nudge (mirrors Claude Code's TODO_REMINDER_CONFIG): fire a
-# reminder only when at least this many assistant turns have passed since the
-# last TodoWrite call *and* since the last reminder.
+# TodoWrite staleness nudge: fire a reminder only when at least this many
+# assistant turns have passed since the last TodoWrite call *and* since the last
+# reminder. Values are Claude Code's TODO_REMINDER_CONFIG verbatim
+# (TURNS_SINCE_WRITE / TURNS_BETWEEN_REMINDERS, both 10).
 TODO_TURNS_SINCE_WRITE = 10
 TODO_TURNS_BETWEEN_REMINDERS = 10
 # Leading sentence of the injected reminder; also used to detect prior reminders
@@ -309,7 +310,11 @@ def _todo_turn_counts(messages: list[dict]) -> tuple[int, int]:
 
 
 def _build_todo_reminder(todos: list[dict]) -> dict:
-    """Build the ``<system-reminder>`` user message nudging TodoWrite use."""
+    """Build the ``<system-reminder>`` user message nudging TodoWrite use.
+
+    Wording follows Claude Code's ``messages.ts``, lightly grammar-corrected
+    ("if it has become stale" vs. their "if has become stale").
+    """
     body = (
         _TODO_REMINDER_LEAD
         + " If you're working on tasks that would benefit from tracking progress, "
