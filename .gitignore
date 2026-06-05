@@ -220,3 +220,8 @@ __marimo__/
 CLAUDE.md
 
 nano-claude-code-plan.md
+
+# Eval harness (evals/) outputs
+runs/
+# SWE-bench Docker harness writes per-instance logs here when run from the repo root
+logs/run_evaluation/
