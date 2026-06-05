@@ -107,6 +107,10 @@ class LoopState:
     # Per-session file snapshots populated by Read and consumed by Edit/Write
     # stale-write guards.
     read_file_state: Any = field(default_factory=dict)
+    # Per-session TodoWrite checklist. Each entry is {content, status, activeForm}.
+    # Threaded into ToolContext.todos so the TodoWrite tool mutates it in place;
+    # subagents have their own LoopState (and thus their own list).
+    todos: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass

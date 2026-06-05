@@ -10,6 +10,7 @@ from nano_claude.tools.glob_tool import GlobTool
 from nano_claude.tools.grep import GrepTool
 from nano_claude.tools.read import ReadTool
 from nano_claude.tools.task import TaskTool
+from nano_claude.tools.todo import TodoWriteTool
 from nano_claude.tools.write import WriteTool
 
 BASE_TOOLS: list[Tool] = [
@@ -20,6 +21,7 @@ BASE_TOOLS: list[Tool] = [
     GlobTool(),
     GrepTool(),
     TaskTool(),
+    TodoWriteTool(),
 ]
 
 # MCP- and plugin-contributed tools, registered at startup.

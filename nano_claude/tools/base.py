@@ -47,6 +47,9 @@ class ToolContext:
     token_usage_sink: Any = None  # parent TokenUsage; subagents merge cost into it
     settings: Any = None  # permission Settings, shared with subagents
     prompter: Any = None  # permission prompter, shared with subagents
+    # Shared reference to the session's TodoWrite list (LoopState.todos). The
+    # TodoWrite tool mutates it in place; None where there is no todo store.
+    todos: list[dict[str, Any]] | None = None
 
 
 @dataclass
