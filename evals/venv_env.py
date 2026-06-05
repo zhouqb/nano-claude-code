@@ -54,6 +54,20 @@ def _pkg_tokens(spec: dict) -> list[str]:
     return out
 
 
+def _install_tokens(spec: dict) -> list[str]:
+    """Installable package specs from a swebench env spec.
+
+    Drops non-package sentinels: ``python`` and requirements-file references
+    (e.g. django records its deps as ``packages: "requirements.txt"``, which is
+    not an installable name — the editable install pulls runtime deps anyway).
+    """
+    return [
+        t
+        for t in _pkg_tokens(spec)
+        if t.lower() != "python" and not t.lower().endswith((".txt", ".cfg", ".ini"))
+    ]
+
+
 def _py_ok(py: str) -> bool:
     try:
         return tuple(int(p) for p in py.split(".")) >= (3, 8)
@@ -112,7 +126,7 @@ class VenvCache:
                 text=True,
                 timeout=900,
             )
-            tokens = [t for t in _pkg_tokens(spec) if t.lower() != "python"]
+            tokens = _install_tokens(spec)
             if tokens:
                 subprocess.run(
                     pip + tokens, check=True, capture_output=True, text=True, timeout=1800

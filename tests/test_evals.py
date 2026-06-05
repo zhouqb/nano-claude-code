@@ -129,6 +129,16 @@ def test_is_feasible_pure_python_vs_compiled_and_old_python():
     assert is_feasible(_vtask("pydata/xarray", "0.12")) is True
 
 
+def test_install_tokens_drops_requirements_file_sentinel():
+    from evals.venv_env import _install_tokens
+
+    # django records deps as packages: "requirements.txt" -> must be dropped
+    assert _install_tokens({"packages": "requirements.txt"}) == []
+    # real packages survive; python + req-file sentinels are filtered
+    spec = {"pip_packages": ["mpmath==1.3.0"], "packages": "python requirements.txt flake8"}
+    assert _install_tokens(spec) == ["mpmath==1.3.0", "flake8"]
+
+
 def test_make_env_provider_backends():
     from evals.venv_env import VenvEnvProvider, make_env_provider
 
