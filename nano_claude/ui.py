@@ -10,12 +10,21 @@ glitch must never crash the loop.
 from __future__ import annotations
 
 from rich.console import Console
+from rich.markup import escape
 
 from nano_claude.agent.loop import LoopCallbacks
 from nano_claude.tools.base import ToolResult
 
 # Tool args worth surfacing in the one-line tool header, in priority order.
 _ARG_KEYS = ("command", "file_path", "pattern", "path", "subagent_type")
+
+# Per-status checklist glyph + rich style, mirroring Claude Code's renderer
+# (figures.tick / squareSmallFilled / squareSmall).
+_TODO_GLYPHS = {
+    "completed": ("✔", "green"),
+    "in_progress": ("◼", "yellow"),
+    "pending": ("◻", "dim"),
+}
 
 
 def _summarize_args(args: dict) -> str:
@@ -75,9 +84,32 @@ class ReplUI:
     def on_tool_start(self, name: str, args: dict) -> None:
         self._stop_spinner()
         self._end_stream()
+        if name == "TodoWrite":
+            self._render_todos(args.get("todos") or [])
+            return
         self.console.print(f"[cyan]⚙ {name}[/cyan]([dim]{_summarize_args(args)}[/dim])")
 
+    def _render_todos(self, todos: list) -> None:
+        """Draw the checklist itself (TodoWrite has no useful one-line summary)."""
+        self.console.print("[cyan]⚙ Update Todos[/cyan]")
+        for todo in todos:
+            status = todo.get("status", "pending")
+            glyph, color = _TODO_GLYPHS.get(status, _TODO_GLYPHS["pending"])
+            # The active item reads better in its present-continuous form.
+            text = todo.get("activeForm") if status == "in_progress" else todo.get("content")
+            text = escape(str(text or ""))
+            if status == "completed":
+                self.console.print(f"  [{color}]{glyph}[/{color}] [strike dim]{text}[/strike dim]")
+            elif status == "in_progress":
+                self.console.print(f"  [{color}]{glyph}[/{color}] [bold]{text}[/bold]")
+            else:
+                self.console.print(f"  [{color}]{glyph} {text}[/{color}]")
+
     def on_tool_end(self, name: str, result: ToolResult) -> None:
+        # TodoWrite already rendered the full list on_tool_start; its fixed
+        # "Todos have been modified" result line would just be noise.
+        if name == "TodoWrite" and not result.is_error:
+            return
         style = "red" if result.is_error else "dim"
         lines = result.output.strip().splitlines()
         head = lines[0] if lines else ""
