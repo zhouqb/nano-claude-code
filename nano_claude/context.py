@@ -22,6 +22,17 @@ IDENTITY = (
     "Be concise and direct. When you don't know something, say so."
 )
 
+ENGINEERING_PRINCIPLES = (
+    "Engineering practices:\n"
+    "- Take test failures seriously. Tests are guards on the code that protect "
+    "against regressions. If a test fails, investigate it and fix the underlying "
+    "cause. Do not delete, skip, weaken, or otherwise modify a test just to make "
+    "it pass.\n"
+    "- When you change existing code, run the tests that cover that code to make "
+    "sure you haven't broken anything.\n"
+    "- When you add new code, write unit tests that cover it."
+)
+
 
 def _git_branch(cwd: str) -> str | None:
     try:
@@ -76,7 +87,7 @@ def build_environment_block(cwd: str | None = None) -> str:
 
 def build_system_prompt(cwd: str | None = None, settings: object | None = None) -> str:
     cwd = cwd or os.getcwd()
-    parts = [IDENTITY, build_environment_block(cwd)]
+    parts = [IDENTITY, ENGINEERING_PRINCIPLES, build_environment_block(cwd)]
     claude_md = _read_project_instructions(cwd)
     if claude_md:
         parts.append(
