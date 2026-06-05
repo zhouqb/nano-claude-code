@@ -353,3 +353,21 @@ def test_run_task_reports_empty_patch_when_no_changes(tmp_path):
     result = run_task(task, cache, cfg, tmp_path / "logs")
     assert result.status is RolloutStatus.EMPTY_PATCH
     assert result.model_patch.strip() == ""
+
+
+def test_capture_patch_excludes_scratch_db(tmp_path):
+    # Scratch databases an agent's repro scripts drop in the repo (e.g. django's
+    # other_N.sqlite3) must not pollute the captured patch.
+    from evals.repo_cache import _seed_local_exclude
+
+    repo_dir = tmp_path / "repo"
+    base = _make_repo(repo_dir)
+    _seed_local_exclude(repo_dir)
+
+    (repo_dir / "app.py").write_text("value = 2\n")  # real source change
+    (repo_dir / "other_1.sqlite3").write_text("")  # scratch db left behind
+    (repo_dir / "scratch.db").write_text("")
+
+    patch = RepoCache.capture_patch(repo_dir, base)
+    assert "app.py" in patch  # the real change is captured
+    assert "sqlite3" not in patch and "scratch.db" not in patch  # scratch excluded
