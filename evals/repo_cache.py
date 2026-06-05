@@ -20,9 +20,20 @@ def _slug(repo: str) -> str:
     return repo.replace("/", "__")
 
 
-# Build artifacts an editable install (host-venv backend) drops in the clone.
-# Seeded into .git/info/exclude so they never leak into the captured patch.
-_LOCAL_EXCLUDE = ["*.egg-info/", ".eggs/", "build/", "__pycache__/", ".pytest_cache/"]
+# Files we never want in the captured patch, seeded into .git/info/exclude:
+# editable-install build artifacts (host-venv backend), and scratch databases
+# the agent's reproduction scripts tend to drop in the repo root (e.g. django
+# leaves `other_N.sqlite3` files, which otherwise pollute the model_patch).
+_LOCAL_EXCLUDE = [
+    "*.egg-info/",
+    ".eggs/",
+    "build/",
+    "__pycache__/",
+    ".pytest_cache/",
+    "*.sqlite3",
+    "*.sqlite",
+    "*.db",
+]
 
 
 def _seed_local_exclude(repo_dir: Path) -> None:
