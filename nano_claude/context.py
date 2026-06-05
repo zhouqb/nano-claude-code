@@ -22,6 +22,16 @@ IDENTITY = (
     "Be concise and direct. When you don't know something, say so."
 )
 
+CONVENTIONS = (
+    "Working in an existing codebase:\n"
+    "- Follow the conventions of the code you are working in. Before using a "
+    "library, confirm it is already a dependency of the project.\n"
+    "- Match the surrounding code's style, naming, and existing APIs rather than "
+    "introducing new patterns, parameters, or interfaces.\n"
+    "- Make the smallest change that satisfies the request: do what is asked, "
+    "nothing more, nothing less."
+)
+
 ENGINEERING_PRINCIPLES = (
     "Engineering practices:\n"
     "- Take test failures seriously. Tests are guards on the code that protect "
@@ -30,7 +40,11 @@ ENGINEERING_PRINCIPLES = (
     "it pass.\n"
     "- When you change existing code, run the tests that cover that code to make "
     "sure you haven't broken anything.\n"
-    "- When you add new code, write unit tests that cover it."
+    "- When you add new code, write unit tests that cover it.\n"
+    "- After changing code, run the project's lint, format, and type checks if it "
+    "has them.\n"
+    "- Do not assume a test, lint, or build command. Discover it from the repo "
+    "(README, pyproject.toml, package.json, or existing config)."
 )
 
 
@@ -87,7 +101,7 @@ def build_environment_block(cwd: str | None = None) -> str:
 
 def build_system_prompt(cwd: str | None = None, settings: object | None = None) -> str:
     cwd = cwd or os.getcwd()
-    parts = [IDENTITY, ENGINEERING_PRINCIPLES, build_environment_block(cwd)]
+    parts = [IDENTITY, CONVENTIONS, ENGINEERING_PRINCIPLES, build_environment_block(cwd)]
     claude_md = _read_project_instructions(cwd)
     if claude_md:
         parts.append(
