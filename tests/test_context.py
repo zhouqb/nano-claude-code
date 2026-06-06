@@ -47,3 +47,9 @@ def test_system_prompt_includes_conventions(tmp_path):
     assert "follow the conventions" in prompt
     assert "already a dependency" in prompt
     assert "nothing more, nothing less" in prompt
+
+
+def test_system_prompt_includes_tool_batching(tmp_path):
+    prompt = build_system_prompt(str(tmp_path)).lower()
+    assert "multiple tool calls in a single turn" in prompt
+    assert "run in parallel" in prompt
