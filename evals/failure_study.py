@@ -146,8 +146,14 @@ def _done_ids(csv_path: Path) -> set[str]:
     "--workers",
     default=1,
     show_default=True,
-    help=f"Concurrent rollout workers (repo-affinity; capped at {MAX_WORKERS}). "
-    "Docker grades are serialized regardless to bound memory.",
+    help=f"Concurrent rollout workers (repo-affinity; capped at {MAX_WORKERS}).",
+)
+@click.option(
+    "--grade-workers",
+    default=0,
+    show_default=True,
+    help="Concurrent Docker grades (0 = match --workers). Total live containers is "
+    "still bounded by --workers since each worker rolls out then grades in turn.",
 )
 @click.option("--resume", is_flag=True, help="Skip cases already in the CSV.")
 def main(
@@ -164,6 +170,7 @@ def main(
     repo_root,
     rollout_backend,
     workers,
+    grade_workers,
     resume,
 ):
     """Collect rollout + grade artifacts for a sample of cases (no auto-analysis)."""
@@ -245,19 +252,28 @@ def main(
     buckets = partition_by_repo(pending, workers)
     n_workers = len(buckets)
 
+    # Grades run concurrently up to n_grade. Total live containers stays <= n_workers
+    # (each worker thread rolls out *then* grades, never both at once), so this only
+    # lifts the redundant serial-grade throttle -- it doesn't raise the memory ceiling.
+    n_grade = grade_workers if grade_workers > 0 else n_workers
+    n_grade = max(1, min(n_grade, n_workers))
+
     console.print(
         f"[bold]Study (collect-only)[/bold]: {len(sampled)} case(s) from "
         f"{dataset}/{split} (seed={seed}). Agent={cfg.model}. "
-        f"workers={n_workers} (grades serialized).\n"
+        f"workers={n_workers}, grade-workers={n_grade}.\n"
         f"Output: {run_dir}/  | resume-skipping {len(done)}, {len(pending)} to run."
     )
 
-    grade_lock = threading.Lock()  # serialize Docker grades to bound VM memory
+    grade_sem = threading.BoundedSemaphore(n_grade)  # cap concurrent Docker grades
     io_lock = threading.Lock()  # serialize CSV/console/progress + counters
     stats = {"ran": 0, "resolved": 0}
 
     def run_one(task) -> None:
         iid = task.instance_id
+        # Per-grade run_id isolates concurrent harness processes (container names,
+        # log dirs, summary file). Used for grading + report lookup below.
+        grade_run_id = f"{run_id}-{iid}"
         # --- rollout (agent); parallel across workers ---
         if rollout_backend == "docker":
             r = run_task_docker(task, cfg, rollout_logs, run_id, tooling)
@@ -266,7 +282,7 @@ def main(
         patch_file = patches_dir / f"{iid}.diff"
         patch_file.write_text(r.model_patch)
 
-        # --- grade (Docker harness); serialized via grade_lock ---
+        # --- grade (Docker harness); concurrent up to grade_sem ---
         eval_s = 0.0
         verdict = InstanceEval(EvalStatus.EMPTY_PATCH)
         if r.model_patch.strip():
@@ -282,20 +298,20 @@ def main(
                 + "\n"
             )
             t0 = time.monotonic()
-            with grade_lock:
+            with grade_sem:
                 try:
                     verdict = adapter.evaluate(
-                        preds_path, [iid], run_dir, run_id, 1, eval_timeout
+                        preds_path, [iid], run_dir, grade_run_id, 1, eval_timeout
                     ).get(iid, InstanceEval(EvalStatus.ERROR))
                 except Exception as exc:  # noqa: BLE001 - a Docker hiccup must not stop the run
                     console.print(f"[red]grade error {iid}: {exc}[/red]")
                     verdict = InstanceEval(EvalStatus.ERROR)
             eval_s = time.monotonic() - t0
 
-        report = _load_report(run_dir, run_id, cfg.model_name_or_path, iid)
+        report = _load_report(run_dir, grade_run_id, cfg.model_name_or_path, iid)
         resolved = verdict.resolved
         f2p_pass, f2p_total, p2p_fail = _test_counts(report)
-        inst_log = _instance_log_dir(run_dir, run_id, cfg.model_name_or_path, iid)
+        inst_log = _instance_log_dir(run_dir, grade_run_id, cfg.model_name_or_path, iid)
         test_output = inst_log / "test_output.txt"
 
         category = ""
