@@ -132,6 +132,27 @@ def _spec(task: Task):
     return make_test_spec(task.extra["instance"])
 
 
+def patch_broken_specs() -> None:
+    """Repair SWE-bench instance recipes that no longer build as written.
+
+    A few recipes pin install commands that newer tooling has outgrown. Because
+    we build images in-process (see ``prebuild_images``), mutating swebench's
+    spec table here fixes the build without touching site-packages. Idempotent.
+
+    - scikit-learn 1.3 (7 Verified instances): its editable install uses
+      ``pip install --no-use-pep517``, a flag pip dropped in 23.1, so the build
+      dies with "no such option". Preserve the recipe's intent (a legacy,
+      build-isolation-free editable install) by pinning pip back to a release
+      that still has the flag, rather than switching the build backend.
+    """
+    from swebench.harness.constants import MAP_REPO_VERSION_TO_SPECS
+
+    sklearn = MAP_REPO_VERSION_TO_SPECS.get("scikit-learn/scikit-learn", {})
+    spec = sklearn.get("1.3")
+    if spec and "--no-use-pep517" in spec.get("install", "") and "pip<23.1" not in spec["install"]:
+        spec["install"] = "python -m pip install 'pip<23.1' && " + spec["install"]
+
+
 def prebuild_images(rows: list[dict], workers: int, log_dir: Path) -> set[str]:
     """Build base/env/instance images for every row; return built instance ids.
 
@@ -142,6 +163,7 @@ def prebuild_images(rows: list[dict], workers: int, log_dir: Path) -> set[str]:
     from swebench.harness.constants import LATEST
     from swebench.harness.docker_build import build_instance_images
 
+    patch_broken_specs()
     log_dir.mkdir(parents=True, exist_ok=True)
     client = docker.from_env()
     successful, failed = build_instance_images(
