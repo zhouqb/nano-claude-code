@@ -31,6 +31,19 @@ TOOL_USE = (
     "result."
 )
 
+APPROACH = (
+    "Before you code:\n"
+    "- Don't guess silently. If the request is ambiguous and you are in an "
+    "interactive session, ask. If you can't ask (e.g. a one-shot or non-"
+    "interactive run), pick the most reasonable interpretation and state the "
+    "assumption you made.\n"
+    "- If multiple sensible approaches exist, briefly weigh them instead of "
+    "committing to the first. If a simpler approach than the one requested would "
+    "work, say so before building the more complex one.\n"
+    "- Don't edit code you don't understand. Read enough of the surrounding code "
+    "to know why it currently works before you change it."
+)
+
 CONVENTIONS = (
     "Working in an existing codebase:\n"
     "- Follow the conventions of the code you are working in. Before using a "
@@ -38,7 +51,15 @@ CONVENTIONS = (
     "- Match the surrounding code's style, naming, and existing APIs rather than "
     "introducing new patterns, parameters, or interfaces.\n"
     "- Make the smallest change that satisfies the request: do what is asked, "
-    "nothing more, nothing less."
+    "nothing more, nothing less. No speculative features, abstractions, "
+    "configurability, or error handling for cases that cannot occur. If a "
+    "200-line solution could be 50 lines, write the 50.\n"
+    "- Keep changes surgical. Don't refactor, reformat, or 'improve' adjacent "
+    "code that isn't part of the task; every line you change should trace back to "
+    "the request. If you spot unrelated dead code or a separate bug, mention it "
+    "rather than fixing it uninvited.\n"
+    "- Clean up only your own mess: remove imports, variables, and helpers that "
+    "your change left unused, but leave pre-existing dead code alone unless asked."
 )
 
 ENGINEERING_PRINCIPLES = (
@@ -50,6 +71,8 @@ ENGINEERING_PRINCIPLES = (
     "- When you change existing code, run the tests that cover that code to make "
     "sure you haven't broken anything.\n"
     "- When you add new code, write unit tests that cover it.\n"
+    "- When fixing a bug, first write or identify a test that reproduces it, then "
+    "make that test pass, so the fix is verified rather than assumed.\n"
     "- After changing code, run the project's lint, format, and type checks if it "
     "has them.\n"
     "- Do not assume a test, lint, or build command. Discover it from the repo "
@@ -114,7 +137,14 @@ def build_environment_block(cwd: str | None = None) -> str:
 
 def build_system_prompt(cwd: str | None = None, settings: object | None = None) -> str:
     cwd = cwd or os.getcwd()
-    parts = [IDENTITY, TOOL_USE, CONVENTIONS, ENGINEERING_PRINCIPLES, build_environment_block(cwd)]
+    parts = [
+        IDENTITY,
+        TOOL_USE,
+        APPROACH,
+        CONVENTIONS,
+        ENGINEERING_PRINCIPLES,
+        build_environment_block(cwd),
+    ]
     claude_md = _read_project_instructions(cwd)
     if claude_md:
         parts.append(
