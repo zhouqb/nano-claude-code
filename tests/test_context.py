@@ -47,6 +47,25 @@ def test_system_prompt_includes_conventions(tmp_path):
     assert "follow the conventions" in prompt
     assert "already a dependency" in prompt
     assert "nothing more, nothing less" in prompt
+    # simplicity-first / anti-overengineering
+    assert "no speculative features" in prompt
+    # surgical changes: no drive-by refactor, clean only your own orphans
+    assert "keep changes surgical" in prompt
+    assert "clean up only your own mess" in prompt
+
+
+def test_system_prompt_includes_think_before_coding(tmp_path):
+    prompt = build_system_prompt(str(tmp_path)).lower()
+    # ask when interactive, else state the assumption (eval-safe)
+    assert "don't guess silently" in prompt
+    assert "state the assumption" in prompt
+    # don't edit code you don't understand
+    assert "don't edit code you don't understand" in prompt
+
+
+def test_system_prompt_includes_reproduce_then_fix(tmp_path):
+    prompt = build_system_prompt(str(tmp_path)).lower()
+    assert "write or identify a test that reproduces it" in prompt
 
 
 def test_system_prompt_includes_tool_batching(tmp_path):
