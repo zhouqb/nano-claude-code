@@ -285,10 +285,15 @@ def _seed_exclude(container: str) -> None:
     )
 
 
-def _capture_patch(container: str, task: Task) -> str:
+def _capture_patch(container: str) -> str:
     r = _exec(
         container,
-        ["bash", "-c", f"cd {TESTBED} && git add -A && git diff --cached {task.base_commit}"],
+        # Diff against HEAD, not base_commit: the SWE-bench image adds an
+        # env-prep commit ("SWE-bench") on top of base_commit that pins deps in
+        # setup.py/tox.ini. HEAD is what the grader applies the patch onto, so
+        # diffing against it captures exactly the agent's changes -- diffing
+        # base_commit wrongly folds that env-prep commit into every patch.
+        ["bash", "-c", f"cd {TESTBED} && git add -A && git diff --cached HEAD"],
         timeout=120,
     )
     _check(r, "capture patch")
@@ -397,7 +402,7 @@ def run_task_docker(
 
         patch = ""
         try:
-            patch = _capture_patch(name, task)
+            patch = _capture_patch(name)
             if cfg.strip_test_changes:
                 patch = strip_paths(patch, _test_paths(task))
         except Exception as exc:  # noqa: BLE001
