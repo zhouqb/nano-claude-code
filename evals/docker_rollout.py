@@ -236,6 +236,44 @@ def _setup_nano(container: str, tooling: Tooling) -> None:
     _check(r, "uv pip install nano-claude")
 
 
+def warm_tooling(task: Task, tooling: Tooling) -> None:
+    """Populate the shared uv cache + interpreter dir once, serially.
+
+    The cache/interpreter dirs are bind-mounted into every rollout container.
+    If several containers ran ``uv venv``/``uv pip install`` against a *cold*
+    shared dir at once they'd race on the Python 3.12 download and corrupt it.
+    So we do one throwaway setup up front: afterwards every per-task setup is a
+    cache *read* (creating its own /opt/nano venv inside its own container),
+    which is safe to do concurrently.
+    """
+    import docker
+
+    client = docker.from_env()
+    spec = _spec(task)
+    name = "nano.warm"
+    _docker(["rm", "-f", name])
+    container = client.containers.create(
+        image=spec.instance_image_key,
+        name=name,
+        command="tail -f /dev/null",
+        detach=True,
+        platform=spec.platform,
+        user="root",
+        volumes={
+            str(tooling.uv_cache): {"bind": UV_CACHE, "mode": "rw"},
+            str(tooling.uv_python): {"bind": UV_PYTHON_DIR, "mode": "rw"},
+        },
+    )
+    try:
+        container.start()
+        _setup_nano(name, tooling)
+    finally:
+        try:
+            container.remove(force=True)
+        except Exception:  # noqa: BLE001 - best-effort teardown
+            pass
+
+
 def _seed_exclude(container: str) -> None:
     """Keep build artifacts / scratch DBs out of the captured patch."""
     block = "\n# nano-eval\n" + "\n".join(_LOCAL_EXCLUDE) + "\n"

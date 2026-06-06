@@ -27,7 +27,12 @@ from rich.console import Console
 
 from evals.config import RolloutConfig
 from evals.datasets import get_adapter
-from evals.docker_rollout import prebuild_images, prepare_tooling, run_task_docker
+from evals.docker_rollout import (
+    prebuild_images,
+    prepare_tooling,
+    run_task_docker,
+    warm_tooling,
+)
 from evals.repo_cache import RepoCache
 from evals.rollout import run_task
 from evals.scheduler import MAX_WORKERS, partition_by_repo
@@ -51,6 +56,7 @@ CSV_FIELDS = [
     "eval_s",
     "patch_bytes",
     "env_ready",
+    "error",
     "patch_file",
     "agent_log",
     "test_output",
@@ -228,6 +234,11 @@ def main(
             )
         pending = [t for t in pending if t.instance_id in built]
         tooling = prepare_tooling(run_dir / "tooling")
+        if pending:
+            # Populate the shared uv cache/interpreter once before the pool, so
+            # concurrent per-task setups are cache reads (no download race).
+            console.print("[dim]docker: warming shared uv cache (one-time)…[/dim]")
+            warm_tooling(pending[0], tooling)
 
     # Repo-affinity buckets (same repo -> one worker, so its clone/venv is never
     # touched concurrently); caps at MAX_WORKERS and at the number of repos.
@@ -307,15 +318,17 @@ def main(
             "eval_s": round(eval_s, 1),
             "patch_bytes": len(r.model_patch),
             "env_ready": "" if r.env_ready is None else r.env_ready,
+            "error": (r.error or "")[:300],
             "patch_file": str(patch_file),
             "agent_log": r.log_path or "",
             "test_output": str(test_output) if test_output.is_file() else "",
             "improvement_suggestion": "",
         }
         mark = "PASS" if resolved else f"FAIL/{category}"
+        err = f" :: {r.error}" if (not resolved and r.error) else ""
         line = (
             f"[{idx_of[iid]}/{total}] {iid}: {mark} "
-            f"(rollout {r.duration_s:.0f}s, eval {eval_s:.0f}s)"
+            f"(rollout {r.duration_s:.0f}s, eval {eval_s:.0f}s){err}"
         )
         with io_lock:
             writer.writerow(row)
