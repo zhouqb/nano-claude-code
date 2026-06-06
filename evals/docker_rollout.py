@@ -144,6 +144,24 @@ def patch_broken_specs() -> None:
       dies with "no such option". Preserve the recipe's intent (a legacy,
       build-isolation-free editable install) by pinning pip back to a release
       that still has the flag, rather than switching the build backend.
+    - astropy 3.1 (2 Verified instances): the PEP 517 *isolated* editable build
+      spins an overlay env that lacks ``pkg_resources``, which astropy's
+      ``ah_bootstrap.py`` imports at setup time -> ``ModuleNotFoundError``. Build
+      against the recipe's already-pinned testbed deps (``--no-build-isolation``,
+      where ``setuptools==68.0.0`` still ships ``pkg_resources``). With isolation
+      off we must also supply astropy's build-time deps that the isolated
+      overlay would have installed: ``jinja2`` (ERFA codegen in
+      ``erfa_generator.py``) and ``cython<3`` (compiling the ``.pyx`` extensions
+      from the git checkout; 3.1's sources predate Cython 3).
+    - pylint 2.15 (1 Verified instance): the isolated build pulls a setuptools
+      too old for PEP 660, so pip refuses the editable install ("build backend
+      ... missing the 'build_editable' hook"). ``--no-build-isolation`` reuses
+      the testbed's newer, PEP 660-capable setuptools.
+
+    The two ``--no-build-isolation`` fixes are arguably *more* faithful to the
+    canonical setup, not less: they build against the recipe's pinned testbed
+    deps instead of re-resolving build deps from the network (the source of the
+    drift), mirroring how several other SWE-bench recipes are already written.
     """
     from swebench.harness.constants import MAP_REPO_VERSION_TO_SPECS
 
@@ -151,6 +169,22 @@ def patch_broken_specs() -> None:
     spec = sklearn.get("1.3")
     if spec and "--no-use-pep517" in spec.get("install", "") and "pip<23.1" not in spec["install"]:
         spec["install"] = "python -m pip install 'pip<23.1' && " + spec["install"]
+
+    # Add --no-build-isolation so the editable build uses the testbed's pinned
+    # setuptools instead of an isolated overlay that's missing pkg_resources
+    # (astropy) or too old for PEP 660 (pylint).
+    for repo, version in (("astropy/astropy", "3.1"), ("pylint-dev/pylint", "2.15")):
+        spec = MAP_REPO_VERSION_TO_SPECS.get(repo, {}).get(version)
+        if spec and "--no-build-isolation" not in spec.get("install", ""):
+            spec["install"] = spec["install"].replace(
+                "pip install -e", "pip install --no-build-isolation -e"
+            )
+
+    # With build isolation off, astropy 3.1's build needs jinja2 (ERFA codegen)
+    # and Cython <3 (compiling .pyx from the git checkout); install them first.
+    spec = MAP_REPO_VERSION_TO_SPECS.get("astropy/astropy", {}).get("3.1")
+    if spec and "jinja2" not in spec.get("install", ""):
+        spec["install"] = "python -m pip install jinja2 'cython<3' && " + spec["install"]
 
 
 def prebuild_images(rows: list[dict], workers: int, log_dir: Path) -> set[str]:
