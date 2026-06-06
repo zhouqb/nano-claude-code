@@ -1,14 +1,11 @@
 """Offline evaluation pipeline for nano-claude-code.
 
-A two-phase harness for running nano-claude against agentic coding benchmarks:
+A Docker-based harness for running nano-claude against agentic coding benchmarks.
+For each task, nano-claude rolls out *inside* the benchmark's instance container
+(exact interpreter + prebuilt deps, can run the project's tests), and the
+captured patch is graded with the same image. Images are pre-built up front;
+rollout + grade run on a flat pool of workers (<=5).
 
-1. **Rollout** (``evals.scheduler`` / ``evals.rollout``) — for each task, check
-   out the target repo at its base commit, run nano-claude one-shot, capture the
-   resulting diff, and reset the clone. Concurrent across repos (<=5 workers)
-   with repo-affinity so a single repo's tasks never run in parallel.
-2. **Evaluation** (``evals.datasets`` adapters) — grade the captured patches.
-   For SWE-bench this defers to the official Docker harness.
-
-Currently only SWE-bench Lite is wired up; new datasets plug in via the
-``DatasetAdapter`` registry in ``evals.datasets``.
+The entry point is ``evals.run``. Datasets plug in via the ``DatasetAdapter``
+registry in ``evals.datasets`` (currently SWE-bench Lite + Verified).
 """

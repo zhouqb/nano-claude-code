@@ -1,7 +1,8 @@
 # evals — offline benchmark harness
 
 Run nano-claude-code against agentic coding benchmarks. Currently supports
-**SWE-bench Lite**; other datasets plug in via a small adapter registry.
+**SWE-bench Lite** and **SWE-bench Verified**; other datasets plug in via a small
+adapter registry.
 
 ## Install
 
@@ -9,115 +10,98 @@ Run nano-claude-code against agentic coding benchmarks. Currently supports
 uv pip install -e ".[evals]"   # adds `datasets` + `swebench`
 ```
 
-The evaluation phase grades patches with the **official SWE-bench Docker
-harness**, so a working Docker daemon is required for `--eval` (the default).
-Use `--no-eval` to skip grading and only produce patches.
+Everything runs in Docker (rollout *and* grading), so a working Docker daemon is
+required.
 
 ## How it works
 
-Two phases:
+Both phases run inside the **official SWE-bench instance images**:
 
-1. **Rollout** (concurrent) — for each task: clone the target repo (once per
-   repo, shared under `--repo-root`, default `/tmp/nano-swebench/repos`), check
-   out its `base_commit`, run `nano-claude` one-shot (`--stdin`,
-   `bypassPermissions`, memory disabled) with the issue as the prompt, capture
-   `git diff` as the `model_patch`, then `git reset --hard && git clean -fdx`.
-2. **Evaluation** (batched) — hand `predictions.jsonl` to
-   `swebench.harness.run_evaluation`, which applies each patch + the gold test
-   patch in Docker and runs `FAIL_TO_PASS` / `PASS_TO_PASS`.
+1. **Rollout** — for each task, start the instance container and run
+   `nano-claude` *inside* it (one-shot `--stdin`, `bypassPermissions`, memory
+   disabled) with the issue as the prompt. nano-claude installs into its own
+   Python 3.12 venv at `/opt/nano` (via `uv`), while the agent's shell `PATH`
+   points at the testbed conda env — so the agent runs the project's real
+   interpreter and tests, however old. The `git diff` is captured as the
+   `model_patch` (diffed against `HEAD`, with edits to graded test files
+   stripped).
+2. **Evaluation** — grade each patch with `swebench.harness.run_evaluation` on
+   the same image (applies the patch + gold test patch, runs `FAIL_TO_PASS` /
+   `PASS_TO_PASS`).
 
-### Concurrency & repo affinity
-
-Tasks are grouped by repo and each repo is assigned to a single worker (≤5),
-balanced by a longest-processing-time greedy pass. Because a repo's tasks share
-one clone, they run **sequentially** within their worker and never concurrently
-across workers. (On full Lite, django=114 tasks bound the best achievable
-balance — one worker owns all of them.)
+Images are **pre-built once** up front, then rollout + grade run on a **flat pool
+of workers** (≤5). No repo affinity is needed — each task gets its own container,
+so any worker can take any task. Grades run concurrently, each under its own
+harness `run_id` (and `cache_level=instance`, so images persist and are reused).
 
 ## Usage
 
 ```bash
-# Quick smoke run: 5 instances, generate patches only (no Docker needed).
-python -m evals.run --sample 5 --no-eval
+# Smoke run: 5 instances, 5 workers.
+python -m evals.run --dataset swe-bench-verified --sample 5 --workers 5
 
-# Full SWE-bench Lite, 5 rollout workers, then grade in Docker.
-python -m evals.run --workers 5 --eval-workers 8
+# Whole dataset.
+python -m evals.run --dataset swe-bench-verified --workers 5
 
 # A single repo / specific instances.
 python -m evals.run --repos django/django --sample 10
 python -m evals.run --instance-ids astropy__astropy-12907,psf__requests-2317
 
-# Resume a crashed run (skips instances already recorded).
-python -m evals.run --output runs/20260604-120000 --resume
+# Batched coverage: non-overlapping 100s into one shared dir.
+python -m evals.run --sample 100 --offset 0   --output runs/full --resume
+python -m evals.run --sample 100 --offset 100 --output runs/full --resume
+
+# Resume a crashed run (skips instances already in analysis.csv).
+python -m evals.run --output runs/full --resume
 ```
 
 Set the provider API key for `--model` first (e.g. `DEEPSEEK_API_KEY` for the
 default `deepseek/deepseek-v4-flash`, or `--model anthropic/claude-sonnet-4-6`
-with `ANTHROPIC_API_KEY`).
+with `ANTHROPIC_API_KEY`). Keys are forwarded into the container by name only.
 
 ### Key flags
 
 | Flag | Meaning |
 |---|---|
-| `--dataset` | Benchmark (default `swe-bench-lite`). |
-| `--sample N` / `--seed` | Random subset of size N (0 = whole dataset). |
+| `--dataset` | Benchmark (`swe-bench-lite` / `swe-bench-verified`). |
+| `--sample N` / `--offset` / `--seed` | Window of size N over the seeded order, starting at `offset` (sample 0 = whole dataset). |
 | `--instance-ids` / `--repos` | Restrict to specific instances or repos. |
 | `--model` / `--max-turns` | Agent model and per-task turn cap. |
-| `--task-timeout` | Per-task agent wall-clock budget (s). |
-| `--workers` | Rollout workers (capped at 5). |
-| `--eval / --no-eval` | Run the Docker grading phase (default on). |
-| `--eval-workers` / `--eval-timeout` | Harness parallelism / per-test timeout. |
-| `--resume` | Skip instances already in the run dir's records. |
+| `--task-timeout` / `--eval-timeout` | Agent budget / per-test timeout (s). |
+| `--workers` | Worker pool size (capped at 5). |
+| `--grade-workers` | Concurrent grades (0 = match `--workers`). |
+| `--build-workers` | Concurrent image builds in the one-time prebuild (default 8). |
+| `--eval / --no-eval` | Grade in Docker (default on; off = rollout only). |
+| `--failure-study / --no-failure-study` | Bundle each miss's artifacts under `failures/<id>/` (default on). |
+| `--resume` | Skip instances already in `analysis.csv`. |
 
 ## Outputs (under the run directory)
 
+- `analysis.csv` — one row per instance: verdict, failure category, F2P/P2P
+  counts, durations, patch + log paths. The results table.
 - `predictions.jsonl` — `{instance_id, model_name_or_path, model_patch}`,
-  directly consumable by the official harness.
-- `rollout_records.jsonl` — full per-task rollout record (status, patch,
-  duration, log path); the resume source.
-- `results.jsonl` — joined rollout + grading verdict per instance.
-- `summary.json` — resolve rate + per-status / per-repo breakdowns.
-- `logs/<instance_id>.log` — agent stdout/stderr per task.
-- `swebench_report/` — the harness's own report JSON.
+  consumable by the official harness.
+- `results.jsonl` / `summary.json` — joined verdicts + resolve rate / per-repo
+  breakdowns.
+- `patches/<id>.diff`, `logs/` — captured patch and per-task agent + harness logs.
+- `failures/<id>/` — (with `--failure-study`) each miss's agent log, patch,
+  report, and test output, for offline review.
 
-## Rollout backends
-
-`--rollout-backend` controls the environment the agent runs in:
-
-- `host` (default) — bare clone, no test environment. The agent reasons without
-  running tests.
-- `host-venv` — a per-`(repo, version)` virtualenv (built with `uv` from
-  swebench's own install recipe, project installed editable so edits are live) so
-  the agent **can run tests to verify its fix**. Restricted to the feasible
-  subset: Python ≥3.8 and the repo isn't itself a native extension
-  (numpy/scipy/pandas *dependencies* are fine — pip fetches wheels). Builds are
-  cached and fall back gracefully; `env_ready` records which cases got an env.
-
-## Failure studies (`failure_study` + `analyze`)
-
-For a deeper, sequential study with per-case artifacts:
+## Analyzing failures (`analyze`)
 
 ```bash
-# Collect: run each sampled case one at a time, grade it, persist the git diff,
-# agent transcript, and harness test output. (no auto-analysis)
-python -m evals.failure_study --dataset swe-bench-verified \
-    --rollout-backend host-venv --sample 50 --output runs/study
-
-# Analyze: aggregate + build a per-failure review bundle for a human/strong model
-python -m evals.analyze runs/study           # -> analysis_summary.json, failures_review.md
-python -m evals.analyze runs/study --merge-suggestions suggestions.json
+python -m evals.analyze runs/full            # -> analysis_summary.json, failures_review.md
+python -m evals.analyze runs/full --merge-suggestions suggestions.json
 ```
 
-`failure_study` writes `analysis.csv` (one row per case, with an empty
-`improvement_suggestion` column). `analyze` aggregates it, bundles each failure's
-diff + failing tests + error output + transcript into `failures_review.md`, and
-can fold externally-authored `{instance_id: {root_cause, improvement_suggestion}}`
-back into the CSV. The suggestion-writing itself is deliberately left to a human
-or strong model, not an automated small-model call.
+`analyze` aggregates `analysis.csv`, bundles each failure's diff + failing tests
++ error output + transcript into `failures_review.md`, and can fold
+externally-authored `{instance_id: {root_cause, improvement_suggestion}}` back
+into the CSV. Suggestion-writing is left to a human or strong model, not an
+automated small-model call.
 
 ## Adding a dataset
 
 Implement `DatasetAdapter` (`load() -> list[Task]` and `evaluate(...)`) in
 `evals/datasets/<name>.py`, then `register()` it in `evals/datasets/__init__.py`.
-The rollout phase is fully generic — only loading and grading are
-dataset-specific.
+Rollout is fully generic — only loading and grading are dataset-specific.

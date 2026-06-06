@@ -1,12 +1,11 @@
-"""Docker rollout backend: run nano-claude *inside* each SWE-bench container.
+"""Run nano-claude *inside* each SWE-bench container (rollout + grade).
 
-The host and host-venv backends can only cover the ~60% of Verified instances
-whose environment we can reproduce on macOS arm64. The remaining ~40% need a
+Reproducing every Verified environment on the host is infeasible — ~40% need a
 compiled-dependency build (scikit-learn/matplotlib/astropy/numpy/pandas/Pillow)
 or an old Python the host can't supply. SWE-bench's own instance images already
-bake those environments, so here we run the agent *inside* the instance
-container — it gets the exact interpreter and pre-built deps and can run the
-project's tests.
+bake those environments, so we run the agent *inside* the instance container —
+it gets the exact interpreter and pre-built deps and can run the project's
+tests. This is the only rollout path; grading uses the same images.
 
 Design notes:
 - nano-claude needs Python >= 3.12 and heavy deps, while the testbed conda env
@@ -29,8 +28,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from evals.config import RolloutConfig
+from evals.patch_utils import _LOCAL_EXCLUDE, changed_paths, strip_paths
 from evals.prompts import verify_addendum
-from evals.repo_cache import _LOCAL_EXCLUDE, changed_paths, strip_paths
 from evals.types import RolloutResult, RolloutStatus, Task
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
