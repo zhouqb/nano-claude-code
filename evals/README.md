@@ -53,6 +53,9 @@ python -m evals.run --sample 100 --offset 100 --output runs/full --resume
 
 # Resume a crashed run (skips instances already in analysis.csv).
 python -m evals.run --output runs/full --resume
+
+# Prebuild images only (warm the cache, e.g. overnight), then exit.
+python -m evals.run --dataset swe-bench-verified --build-only --build-workers 8
 ```
 
 Set the provider API key for `--model` first (e.g. `DEEPSEEK_API_KEY` for the

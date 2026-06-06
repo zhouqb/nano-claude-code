@@ -194,6 +194,12 @@ def _select(
     "keep it modest (heavy docker builds can thrash).",
 )
 @click.option(
+    "--build-only",
+    is_flag=True,
+    help="Only prebuild the selected instances' Docker images, then exit "
+    "(warms the cache for later runs; idempotent).",
+)
+@click.option(
     "--eval/--no-eval",
     "do_eval",
     default=True,
@@ -231,6 +237,7 @@ def main(
     workers,
     grade_workers,
     build_workers,
+    build_only,
     do_eval,
     failure_study,
     no_strip_test_changes,
@@ -268,6 +275,24 @@ def main(
     sampled = _select(adapter.load(), instance_ids, repos, sample, offset, seed)
     if not sampled:
         raise click.ClickException("No tasks selected.")
+
+    # Build-only: prebuild the selected instances' images and exit. Useful to
+    # warm the cache (e.g. overnight) so later runs skip the slow build phase.
+    # swebench skips images that already exist, so this is idempotent.
+    if build_only:
+        rows = [t.extra["instance"] for t in sampled]
+        console.print(
+            f"[bold]build-only[/bold]: building images for {len(rows)} instance(s) "
+            f"({build_workers} build workers)…"
+        )
+        built = prebuild_images(rows, build_workers, run_dir / "image-build-logs")
+        missing = sorted({t.instance_id for t in sampled} - built)
+        console.print(f"[bold]Built/cached {len(built)}/{len(rows)}.[/bold]")
+        if missing:
+            console.print(f"[yellow]{len(missing)} did NOT build (upstream recipe issues):[/yellow]")
+            for iid in missing:
+                console.print(f"  {iid}")
+        return
 
     done = _done_ids(csv_path) if resume else set()
     pending = [t for t in sampled if t.instance_id not in done]
