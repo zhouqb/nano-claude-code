@@ -22,6 +22,15 @@ IDENTITY = (
     "Be concise and direct. When you don't know something, say so."
 )
 
+TOOL_USE = (
+    "Tool use:\n"
+    "- When you need several independent pieces of information (reading multiple "
+    "files, running multiple searches), request them as multiple tool calls in a "
+    "single turn rather than one at a time. Independent calls run in parallel, so "
+    "batching them is faster. Only sequence calls when one depends on another's "
+    "result."
+)
+
 CONVENTIONS = (
     "Working in an existing codebase:\n"
     "- Follow the conventions of the code you are working in. Before using a "
@@ -105,7 +114,7 @@ def build_environment_block(cwd: str | None = None) -> str:
 
 def build_system_prompt(cwd: str | None = None, settings: object | None = None) -> str:
     cwd = cwd or os.getcwd()
-    parts = [IDENTITY, CONVENTIONS, ENGINEERING_PRINCIPLES, build_environment_block(cwd)]
+    parts = [IDENTITY, TOOL_USE, CONVENTIONS, ENGINEERING_PRINCIPLES, build_environment_block(cwd)]
     claude_md = _read_project_instructions(cwd)
     if claude_md:
         parts.append(
