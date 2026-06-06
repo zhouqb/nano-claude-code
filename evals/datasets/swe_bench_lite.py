@@ -86,11 +86,21 @@ class SweBenchAdapter:
             str(max_workers),
             "--timeout",
             str(timeout),
+            # Keep instance images (don't prune above this level). The default
+            # ("env") deletes instance images after grading, and clean_images
+            # scans *all* images globally -- so concurrent grades delete each
+            # other's images and crash with ImageNotFound. cache_level=instance
+            # removes nothing, making parallel grading safe (and reusing images).
+            "--cache_level",
+            "instance",
             "--instance_ids",
             *instance_ids,
         ]
-        # Stream the harness output through; it's long-running and informative.
-        subprocess.run(cmd, check=True, cwd=run_dir)
+        # The per-instance report.json (read below) is the source of truth, so we
+        # don't use check=True: a non-fatal harness hiccup (e.g. an image-cleanup
+        # error) must not discard a verdict that was actually written. A real
+        # failure simply leaves no report, which _parse_reports maps to ERROR.
+        subprocess.run(cmd, check=False, cwd=run_dir)
         model = self._model_name(predictions_path)
         return self._parse_reports(run_dir, run_id, model, instance_ids)
 
