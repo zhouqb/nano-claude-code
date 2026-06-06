@@ -124,7 +124,14 @@ def _done_ids(csv_path: Path) -> set[str]:
 @click.command()
 @click.option("--dataset", default="swe-bench-lite", show_default=True)
 @click.option("--split", default="test", show_default=True)
-@click.option("--sample", default=50, show_default=True, help="Number of cases to sample.")
+@click.option("--sample", default=50, show_default=True, help="Window size: cases per batch.")
+@click.option(
+    "--offset",
+    default=0,
+    show_default=True,
+    help="Skip the first N cases of the (seeded) ordering. Run batches as "
+    "--offset 0 / 100 / 200 ... with the same --seed for non-overlapping coverage.",
+)
 @click.option("--seed", default=0, show_default=True, help="Sampling seed (reproducible).")
 @click.option("--instance-ids", default="", help="Comma-separated ids to run instead of sampling.")
 @click.option("--output", default=None, help="Run directory (default: runs/study-<n>-<seed>).")
@@ -160,6 +167,7 @@ def main(
     dataset,
     split,
     sample,
+    offset,
     seed,
     instance_ids,
     output,
@@ -177,7 +185,8 @@ def main(
     adapter = get_adapter(dataset)
     adapter.split = split  # the swe-bench adapter reads self.split in load()/evaluate()
 
-    run_dir = Path(output) if output else Path("runs") / f"study-{sample}-{seed}"
+    default_name = f"study-{sample}-{seed}" + (f"-off{offset}" if offset else "")
+    run_dir = Path(output) if output else Path("runs") / default_name
     run_dir.mkdir(parents=True, exist_ok=True)
     run_id = run_dir.name
     csv_path = run_dir / "analysis.csv"
@@ -206,7 +215,12 @@ def main(
         wanted = {s.strip() for s in instance_ids.split(",") if s.strip()}
         sampled = [t for t in tasks if t.instance_id in wanted]
     else:
-        sampled = random.Random(seed).sample(tasks, min(sample, len(tasks)))
+        # Deterministic full ordering, then take the window [offset:offset+sample].
+        # Non-overlapping batches ("first 100", "next 100", ...) are just
+        # --offset 0/100/200/... with the same seed -- they partition the dataset
+        # with no overlap and full coverage. (offset=0 keeps the usual top-N.)
+        ordered = random.Random(seed).sample(tasks, len(tasks))
+        sampled = ordered[offset : offset + sample]
     # Group same-repo cases together so the clone and the Docker env image are
     # reused across them (the biggest time sink). Still strictly one at a time.
     sampled.sort(key=lambda t: t.repo)
@@ -260,7 +274,7 @@ def main(
 
     console.print(
         f"[bold]Study (collect-only)[/bold]: {len(sampled)} case(s) from "
-        f"{dataset}/{split} (seed={seed}). Agent={cfg.model}. "
+        f"{dataset}/{split} (seed={seed}, offset={offset}). Agent={cfg.model}. "
         f"workers={n_workers}, grade-workers={n_grade}.\n"
         f"Output: {run_dir}/  | resume-skipping {len(done)}, {len(pending)} to run."
     )
