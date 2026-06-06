@@ -14,9 +14,10 @@ source code in place.
 
 Guidelines:
 - Make the smallest change that correctly fixes the issue.
-- Do NOT modify, add, or delete the project's own test files. The grader supplies \
-its own tests; changing test files will invalidate the run. (You may still write a \
-scratch reproduction script outside the test suite to check your work.)
+- Do NOT modify, add, or delete the project's own test files. The grader applies its \
+own tests on top of the repository's existing test suite, and your change must not \
+break tests that currently pass; editing test files will invalidate the run. (You may \
+still write a scratch reproduction script outside the test suite to check your work.)
 - You may read and search the code freely.
 - Do not commit, and do not run `git` write commands. Just leave your edits in \
 the working tree when you are done.
@@ -39,5 +40,9 @@ def verify_addendum(test_cmd: str) -> str:
         f"relevant to the issue, e.g. `{test_cmd} <path-or-test-ids>` or "
         "`python -m pytest <path>`. Don't just reason about correctness — run tests, "
         "read the failures, and iterate until the relevant tests pass. Avoid running "
-        "the entire suite (slow); target the modules related to the issue."
+        "the entire suite (slow); target the modules related to the issue. "
+        "Any test that passes on the unmodified code must still pass after your "
+        "change: if a test fails once you've edited, assume your change caused it and "
+        "fix your change — do not dismiss failures as pre-existing (check against the "
+        "original code first) or assume the grader's own tests will replace them."
     )
