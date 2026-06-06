@@ -17,7 +17,9 @@ import csv
 import json
 import random
 import shutil
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import click
@@ -25,8 +27,10 @@ from rich.console import Console
 
 from evals.config import RolloutConfig
 from evals.datasets import get_adapter
+from evals.docker_rollout import prebuild_images, prepare_tooling, run_task_docker
 from evals.repo_cache import RepoCache
 from evals.rollout import run_task
+from evals.scheduler import MAX_WORKERS, partition_by_repo
 from evals.types import EvalStatus, InstanceEval, RolloutStatus
 from evals.venv_env import filter_feasible, make_env_provider
 
@@ -125,10 +129,19 @@ def _done_ids(csv_path: Path) -> set[str]:
 @click.option("--repo-root", default="/tmp/nano-swebench/repos", show_default=True)
 @click.option(
     "--rollout-backend",
-    type=click.Choice(["host", "host-venv"]),
+    type=click.Choice(["host", "host-venv", "docker"]),
     default="host",
     show_default=True,
-    help="host: bare clone (no test env). host-venv: per-(repo,version) venv so the agent can run tests.",
+    help="host: bare clone (no test env). host-venv: per-(repo,version) venv so the "
+    "agent can run tests. docker: run the agent inside the SWE-bench instance "
+    "container (covers all instances, incl. compiled-dep ones).",
+)
+@click.option(
+    "--workers",
+    default=1,
+    show_default=True,
+    help=f"Concurrent rollout workers (repo-affinity; capped at {MAX_WORKERS}). "
+    "Docker grades are serialized regardless to bound memory.",
 )
 @click.option("--resume", is_flag=True, help="Skip cases already in the CSV.")
 def main(
@@ -144,6 +157,7 @@ def main(
     eval_timeout,
     repo_root,
     rollout_backend,
+    workers,
     resume,
 ):
     """Collect rollout + grade artifacts for a sample of cases (no auto-analysis)."""
@@ -194,28 +208,54 @@ def main(
         writer.writeheader()
         csv_file.flush()
 
+    pending = [t for t in sampled if t.instance_id not in done]
+    idx_of = {t.instance_id: i for i, t in enumerate(sampled, start=1)}
+    total = len(sampled)
+
+    # Docker backend: build all images up front (no build races during rollout)
+    # and build the shared nano-claude tooling. Drop instances whose image
+    # failed to build so workers don't trip over a missing image.
+    tooling = None
+    if rollout_backend == "docker" and pending:
+        console.print(f"[dim]docker: pre-building images for {len(pending)} instance(s)…[/dim]")
+        built = prebuild_images(
+            [t.extra["instance"] for t in pending], workers, run_dir / "image-build-logs"
+        )
+        skipped = [t for t in pending if t.instance_id not in built]
+        if skipped:
+            console.print(
+                f"[yellow]docker: {len(skipped)} image build(s) failed; skipping those.[/yellow]"
+            )
+        pending = [t for t in pending if t.instance_id in built]
+        tooling = prepare_tooling(run_dir / "tooling")
+
+    # Repo-affinity buckets (same repo -> one worker, so its clone/venv is never
+    # touched concurrently); caps at MAX_WORKERS and at the number of repos.
+    buckets = partition_by_repo(pending, workers)
+    n_workers = len(buckets)
+
     console.print(
         f"[bold]Study (collect-only)[/bold]: {len(sampled)} case(s) from "
-        f"{dataset}/{split} (seed={seed}), sequential. Agent={cfg.model}.\n"
-        f"Output: {run_dir}/  | resume-skipping {len(done)}."
+        f"{dataset}/{split} (seed={seed}). Agent={cfg.model}. "
+        f"workers={n_workers} (grades serialized).\n"
+        f"Output: {run_dir}/  | resume-skipping {len(done)}, {len(pending)} to run."
     )
 
-    resolved_count = 0
-    ran = 0
-    for idx, task in enumerate(sampled, start=1):
+    grade_lock = threading.Lock()  # serialize Docker grades to bound VM memory
+    io_lock = threading.Lock()  # serialize CSV/console/progress + counters
+    stats = {"ran": 0, "resolved": 0}
+
+    def run_one(task) -> None:
         iid = task.instance_id
-        if iid in done:
-            continue
-        ran += 1
-
-        # --- rollout (agent) ---
-        r = run_task(task, cache, cfg, rollout_logs, env_provider=env_provider)
-
-        # Persist the exact git diff for every case (the unit of grading).
+        # --- rollout (agent); parallel across workers ---
+        if rollout_backend == "docker":
+            r = run_task_docker(task, cfg, rollout_logs, run_id, tooling)
+        else:
+            r = run_task(task, cache, cfg, rollout_logs, env_provider=env_provider)
         patch_file = patches_dir / f"{iid}.diff"
         patch_file.write_text(r.model_patch)
 
-        # --- grade (Docker harness, single instance) ---
+        # --- grade (Docker harness); serialized via grade_lock ---
         eval_s = 0.0
         verdict = InstanceEval(EvalStatus.EMPTY_PATCH)
         if r.model_patch.strip():
@@ -231,13 +271,14 @@ def main(
                 + "\n"
             )
             t0 = time.monotonic()
-            try:
-                verdict = adapter.evaluate(preds_path, [iid], run_dir, run_id, 1, eval_timeout).get(
-                    iid, InstanceEval(EvalStatus.ERROR)
-                )
-            except Exception as exc:  # noqa: BLE001 - a Docker hiccup must not stop the run
-                console.print(f"[red]grade error {iid}: {exc}[/red]")
-                verdict = InstanceEval(EvalStatus.ERROR)
+            with grade_lock:
+                try:
+                    verdict = adapter.evaluate(
+                        preds_path, [iid], run_dir, run_id, 1, eval_timeout
+                    ).get(iid, InstanceEval(EvalStatus.ERROR))
+                except Exception as exc:  # noqa: BLE001 - a Docker hiccup must not stop the run
+                    console.print(f"[red]grade error {iid}: {exc}[/red]")
+                    verdict = InstanceEval(EvalStatus.ERROR)
             eval_s = time.monotonic() - t0
 
         report = _load_report(run_dir, run_id, cfg.model_name_or_path, iid)
@@ -250,42 +291,53 @@ def main(
         if not resolved:
             category = _classify(r, verdict, report)
             _bundle_failure(run_dir / "failures" / iid, r, inst_log)
-        else:
-            resolved_count += 1
 
-        writer.writerow(
-            {
-                "idx": idx,
-                "instance_id": iid,
-                "repo": task.repo,
-                "rollout_status": r.status.value,
-                "eval_status": verdict.status.value,
-                "resolved": resolved,
-                "failure_category": category,
-                "f2p_passed": f2p_pass,
-                "f2p_total": f2p_total,
-                "p2p_failed": p2p_fail,
-                "rollout_s": round(r.duration_s, 1),
-                "eval_s": round(eval_s, 1),
-                "patch_bytes": len(r.model_patch),
-                "env_ready": "" if r.env_ready is None else r.env_ready,
-                "patch_file": str(patch_file),
-                "agent_log": r.log_path or "",
-                "test_output": str(test_output) if test_output.is_file() else "",
-                "improvement_suggestion": "",
-            }
-        )
-        csv_file.flush()
-
+        row = {
+            "idx": idx_of[iid],
+            "instance_id": iid,
+            "repo": task.repo,
+            "rollout_status": r.status.value,
+            "eval_status": verdict.status.value,
+            "resolved": resolved,
+            "failure_category": category,
+            "f2p_passed": f2p_pass,
+            "f2p_total": f2p_total,
+            "p2p_failed": p2p_fail,
+            "rollout_s": round(r.duration_s, 1),
+            "eval_s": round(eval_s, 1),
+            "patch_bytes": len(r.model_patch),
+            "env_ready": "" if r.env_ready is None else r.env_ready,
+            "patch_file": str(patch_file),
+            "agent_log": r.log_path or "",
+            "test_output": str(test_output) if test_output.is_file() else "",
+            "improvement_suggestion": "",
+        }
         mark = "PASS" if resolved else f"FAIL/{category}"
-        line = f"[{idx}/{len(sampled)}] {iid}: {mark} (rollout {r.duration_s:.0f}s, eval {eval_s:.0f}s)"
-        console.print(("[green]" if resolved else "[yellow]") + line + "[/]")
-        with progress.open("a") as p:
-            p.write(line + "\n")
+        line = (
+            f"[{idx_of[iid]}/{total}] {iid}: {mark} "
+            f"(rollout {r.duration_s:.0f}s, eval {eval_s:.0f}s)"
+        )
+        with io_lock:
+            writer.writerow(row)
+            csv_file.flush()
+            console.print(("[green]" if resolved else "[yellow]") + line + "[/]")
+            with progress.open("a") as p:
+                p.write(line + "\n")
+            stats["ran"] += 1
+            stats["resolved"] += int(resolved)
+
+    def worker(bucket) -> None:
+        for task in bucket:
+            run_one(task)
+
+    if buckets:
+        with ThreadPoolExecutor(max_workers=n_workers) as pool:
+            for fut in [pool.submit(worker, b) for b in buckets]:
+                fut.result()  # surface any worker-thread exception
 
     csv_file.close()
     console.print(
-        f"\n[bold]Done.[/bold] Ran {ran} case(s); resolved {resolved_count}. "
+        f"\n[bold]Done.[/bold] Ran {stats['ran']} case(s); resolved {stats['resolved']}. "
         f"CSV: {csv_path}  | failures bundled under {run_dir}/failures/"
     )
 

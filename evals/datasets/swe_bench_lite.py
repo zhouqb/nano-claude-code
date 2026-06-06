@@ -36,11 +36,14 @@ class SweBenchAdapter:
                     base_commit=row["base_commit"],
                     prompt=swe_bench_prompt(row["repo"], row["problem_statement"]),
                     # repo+version drive the host-venv env spec lookup; test_patch
-                    # drives test-file stripping in the rollout.
+                    # drives test-file stripping in the rollout. "instance" is the
+                    # raw row, used only by the docker backend (make_test_spec) to
+                    # build images/containers — never shown to the agent.
                     extra={
                         "test_patch": row.get("test_patch", ""),
                         "version": str(row.get("version", "")),
                         "repo": row["repo"],
+                        "instance": dict(row),
                     },
                 )
             )
