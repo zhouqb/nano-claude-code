@@ -4,72 +4,13 @@ from __future__ import annotations
 
 import csv
 import json
-import subprocess
-from pathlib import Path
 
 import pytest
 
-from evals.config import RolloutConfig
 from evals.datasets import available, get_adapter
-from evals.repo_cache import RepoCache, changed_paths, strip_paths
+from evals.patch_utils import changed_paths, strip_paths
 from evals.report import aggregate, build_results
-from evals.rollout import run_task
-from evals.scheduler import MAX_WORKERS, partition_by_repo
-from evals.types import EvalStatus, InstanceEval, RolloutStatus, Task
-
-
-def _task(instance_id: str, repo: str) -> Task:
-    return Task(instance_id=instance_id, repo=repo, base_commit="x", prompt="p")
-
-
-# --- scheduler / partitioning -------------------------------------------------
-
-
-def test_partition_keeps_each_repo_on_one_worker():
-    tasks = (
-        [_task(f"a{i}", "o/a") for i in range(3)]
-        + [_task(f"b{i}", "o/b") for i in range(2)]
-        + [_task("c0", "o/c")]
-    )
-    buckets = partition_by_repo(tasks, num_workers=2)
-
-    # Every repo's tasks land in exactly one bucket (no repo split across workers).
-    seen: dict[str, int] = {}
-    for i, bucket in enumerate(buckets):
-        for t in bucket:
-            assert seen.setdefault(t.repo, i) == i
-    # No task lost or duplicated.
-    assert sum(len(b) for b in buckets) == len(tasks)
-
-
-def test_run_rollouts_handles_no_pending_tasks(tmp_path):
-    # --resume with everything already done -> empty task list must not crash
-    # on ThreadPoolExecutor(max_workers=0).
-    from evals.scheduler import run_rollouts
-
-    cache = RepoCache(tmp_path / "repos")
-    assert run_rollouts([], RolloutConfig(), cache, tmp_path / "logs", 5) == []
-
-
-def test_partition_never_more_buckets_than_repos():
-    tasks = [_task(f"a{i}", "o/a") for i in range(3)] + [_task("b0", "o/b")]
-    buckets = partition_by_repo(tasks, num_workers=10)
-    assert len(buckets) == 2  # only two repos
-
-
-def test_partition_caps_at_max_workers():
-    tasks = [_task(f"t{i}", f"o/r{i}") for i in range(20)]  # 20 distinct repos
-    buckets = partition_by_repo(tasks, num_workers=99)
-    assert len(buckets) == MAX_WORKERS
-
-
-def test_partition_balances_load():
-    # 6 small repos over 3 workers -> 2 each.
-    tasks = [_task(f"t{i}", f"o/r{i}") for i in range(6)]
-    buckets = partition_by_repo(tasks, num_workers=3)
-    assert len(buckets) == 3
-    assert all(len(b) == 2 for b in buckets)
-
+from evals.types import EvalStatus, InstanceEval, RolloutStatus
 
 # --- diff filtering -----------------------------------------------------------
 
@@ -107,49 +48,6 @@ def test_strip_paths_noop_when_empty():
     assert strip_paths(SAMPLE_DIFF, set()) == SAMPLE_DIFF
 
 
-# --- host-venv backend --------------------------------------------------------
-
-
-def _vtask(repo: str, version: str) -> Task:
-    return Task("x", repo, "c", "p", extra={"repo": repo, "version": version})
-
-
-def test_is_feasible_pure_python_vs_compiled_and_old_python():
-    from evals.venv_env import is_feasible
-
-    # sympy 1.9: Python 3.9, pure pip -> feasible
-    assert is_feasible(_vtask("sympy/sympy", "1.9")) is True
-    # scikit-learn IS a native extension (own install compiles) -> not feasible
-    assert is_feasible(_vtask("scikit-learn/scikit-learn", "1.3")) is False
-    # matplotlib likewise compiles itself -> not feasible
-    assert is_feasible(_vtask("matplotlib/matplotlib", "3.7")) is False
-    # django 2.2: Python 3.5 -> no arm64 interpreter -> not feasible
-    assert is_feasible(_vtask("django/django", "2.2")) is False
-    # xarray only *depends on* numpy/pandas (wheels) -> feasible despite that
-    assert is_feasible(_vtask("pydata/xarray", "0.12")) is True
-
-
-def test_install_tokens_drops_requirements_file_sentinel():
-    from evals.venv_env import _install_tokens
-
-    # django records deps as packages: "requirements.txt" -> must be dropped
-    assert _install_tokens({"packages": "requirements.txt"}) == []
-    # real packages survive; python + req-file sentinels are filtered
-    spec = {"pip_packages": ["mpmath==1.3.0"], "packages": "python requirements.txt flake8"}
-    assert _install_tokens(spec) == ["mpmath==1.3.0", "flake8"]
-
-
-def test_make_env_provider_backends():
-    from evals.venv_env import VenvEnvProvider, make_env_provider
-
-    assert make_env_provider("host", Path("/tmp/x")) is None
-    assert isinstance(make_env_provider("host-venv", Path("/tmp/x")), VenvEnvProvider)
-
-
-def test_verified_adapter_registered():
-    assert "swe-bench-verified" in available()
-
-
 # --- analyze ------------------------------------------------------------------
 
 
@@ -161,7 +59,8 @@ def _write_csv(path, rows):
 
 
 def test_analyze_aggregate_and_merge(tmp_path):
-    from evals.analyze import aggregate, merge_suggestions
+    from evals.analyze import aggregate as analyze_aggregate
+    from evals.analyze import merge_suggestions
 
     rows = [
         {"instance_id": "a-1", "repo": "o/a", "resolved": "True", "failure_category": "",
@@ -174,7 +73,7 @@ def test_analyze_aggregate_and_merge(tmp_path):
     csv_path = tmp_path / "analysis.csv"
     _write_csv(csv_path, rows)
 
-    summary = aggregate(rows)
+    summary = analyze_aggregate(rows)
     assert summary["resolved_instances"] == 1
     assert summary["resolve_rate"] == round(1 / 3, 4)
     assert summary["failure_categories"] == {"tests_failed": 1, "empty_patch": 1}
@@ -214,6 +113,10 @@ def test_analyze_build_review(tmp_path):
 
 def test_registry_has_swe_bench_lite():
     assert "swe-bench-lite" in available()
+
+
+def test_verified_adapter_registered():
+    assert "swe-bench-verified" in available()
 
 
 def test_get_adapter_unknown_raises():
@@ -269,105 +172,3 @@ def test_aggregate_computes_resolve_rate_and_per_repo():
     assert summary["resolve_rate"] == round(1 / 3, 4)
     assert summary["per_repo"]["o/a"]["resolved"] == 1
     assert summary["per_repo"]["o/a"]["total"] == 2
-
-
-# --- repo_cache + rollout (offline, real git, fake agent) ---------------------
-
-
-def _git(path: Path, *args: str) -> None:
-    subprocess.run(
-        ["git", "-c", "user.email=t@t", "-c", "user.name=t", *args],
-        cwd=path,
-        check=True,
-        capture_output=True,
-    )
-
-
-def _make_repo(repo_dir: Path) -> str:
-    repo_dir.mkdir(parents=True)
-    _git(repo_dir, "init", "-q")
-    (repo_dir / "app.py").write_text("value = 1\n")
-    (repo_dir / "tests").mkdir()
-    (repo_dir / "tests" / "test_app.py").write_text("def test(): assert True\n")
-    _git(repo_dir, "add", "-A")
-    _git(repo_dir, "commit", "-q", "-m", "base")
-    out = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=repo_dir, check=True, capture_output=True, text=True
-    )
-    return out.stdout.strip()
-
-
-def _fake_agent(path: Path) -> str:
-    """A stand-in for nano-claude: edits source + a test file, ignores stdin."""
-    script = path / "fake-agent.sh"
-    script.write_text(
-        "#!/bin/sh\n"
-        "cat > /dev/null\n"  # drain the prompt on stdin
-        "echo 'value = 2' > app.py\n"
-        "echo 'def test(): assert False' > tests/test_app.py\n"
-    )
-    script.chmod(0o755)
-    return str(script)
-
-
-def test_run_task_captures_patch_and_resets(tmp_path):
-    root = tmp_path / "repos"
-    repo_dir = root / "me__proj"  # matches RepoCache slug for "me/proj"
-    base = _make_repo(repo_dir)
-    cache = RepoCache(root)
-
-    cfg = RolloutConfig(nano_bin=_fake_agent(tmp_path), task_timeout=30)
-    task = Task(
-        instance_id="me__proj-1",
-        repo="me/proj",
-        base_commit=base,
-        prompt="fix it",
-        extra={"test_patch": "diff --git a/tests/test_app.py b/tests/test_app.py\n"},
-    )
-
-    result = run_task(task, cache, cfg, tmp_path / "logs")
-
-    assert result.status is RolloutStatus.OK
-    # Source change captured...
-    assert "value = 2" in result.model_patch
-    assert "app.py" in result.model_patch
-    # ...but the test-file edit was stripped (strip_test_changes default on).
-    assert "test_app.py" not in result.model_patch
-    # Working tree restored to pristine for the next task.
-    assert (repo_dir / "app.py").read_text() == "value = 1\n"
-    assert (repo_dir / "tests" / "test_app.py").read_text() == "def test(): assert True\n"
-
-
-def test_run_task_reports_empty_patch_when_no_changes(tmp_path):
-    root = tmp_path / "repos"
-    repo_dir = root / "me__proj"
-    base = _make_repo(repo_dir)
-    cache = RepoCache(root)
-
-    noop = tmp_path / "noop.sh"
-    noop.write_text("#!/bin/sh\ncat > /dev/null\n")
-    noop.chmod(0o755)
-
-    cfg = RolloutConfig(nano_bin=str(noop), task_timeout=30)
-    task = Task("me__proj-2", "me/proj", base, "do nothing")
-    result = run_task(task, cache, cfg, tmp_path / "logs")
-    assert result.status is RolloutStatus.EMPTY_PATCH
-    assert result.model_patch.strip() == ""
-
-
-def test_capture_patch_excludes_scratch_db(tmp_path):
-    # Scratch databases an agent's repro scripts drop in the repo (e.g. django's
-    # other_N.sqlite3) must not pollute the captured patch.
-    from evals.repo_cache import _seed_local_exclude
-
-    repo_dir = tmp_path / "repo"
-    base = _make_repo(repo_dir)
-    _seed_local_exclude(repo_dir)
-
-    (repo_dir / "app.py").write_text("value = 2\n")  # real source change
-    (repo_dir / "other_1.sqlite3").write_text("")  # scratch db left behind
-    (repo_dir / "scratch.db").write_text("")
-
-    patch = RepoCache.capture_patch(repo_dir, base)
-    assert "app.py" in patch  # the real change is captured
-    assert "sqlite3" not in patch and "scratch.db" not in patch  # scratch excluded
