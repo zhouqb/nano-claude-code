@@ -44,7 +44,11 @@ ENGINEERING_PRINCIPLES = (
     "- After changing code, run the project's lint, format, and type checks if it "
     "has them.\n"
     "- Do not assume a test, lint, or build command. Discover it from the repo "
-    "(README, pyproject.toml, package.json, or existing config)."
+    "(README, pyproject.toml, package.json, or existing config).\n"
+    "- If an action fails, diagnose why before trying again: read the actual "
+    "error, check your assumptions, and form a new hypothesis. Do not repeat the "
+    "same edit-then-test cycle unchanged; if an approach has failed twice, step "
+    "back and reconsider the root cause instead of retrying."
 )
 
 

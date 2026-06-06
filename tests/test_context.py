@@ -37,6 +37,9 @@ def test_system_prompt_includes_engineering_principles(tmp_path):
     # verification extension: lint/typecheck + discover commands
     assert "lint" in prompt
     assert "discover it from the repo" in prompt
+    # diagnose-before-retrying (anti-thrash)
+    assert "diagnose why before trying again" in prompt
+    assert "step back and reconsider the root cause" in prompt
 
 
 def test_system_prompt_includes_conventions(tmp_path):
