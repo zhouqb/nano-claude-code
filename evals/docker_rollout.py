@@ -186,6 +186,53 @@ def patch_broken_specs() -> None:
     if spec and "jinja2" not in spec.get("install", ""):
         spec["install"] = "python -m pip install jinja2 'cython<3' && " + spec["install"]
 
+    patch_deleted_branch_clone()
+
+
+# Repos whose recipe clones a release branch (REPO_BASE_COMMIT_BRANCH) that has
+# since been deleted upstream. See patch_deleted_branch_clone.
+_DELETED_BRANCH_REPOS = {"sympy/sympy"}
+
+
+def patch_deleted_branch_clone() -> None:
+    """Make the repo clone resilient to release branches deleted upstream.
+
+    For some commits, swebench's recipe clones a specific release branch
+    (``git clone --branch <X> --single-branch``) because the base_commit isn't on
+    the default branch. sympy has since deleted its ``1.7`` branch from GitHub, so
+    that clone fails with "Remote branch 1.7 not found" and the instance image
+    can't build (the 6 sympy-1.7 images that exist are just cached from before the
+    deletion). The base_commit itself is still fetchable by SHA, though.
+
+    Wrap ``make_repo_script_list`` so that for the affected repos the clone drops
+    the dead ``--branch``/``--single-branch`` flags and explicitly fetches the
+    base_commit SHA before the ``git reset --hard``. Idempotent. We patch the name
+    in the ``test_spec`` module namespace, which is where ``make_test_spec`` looks
+    it up (it does ``from .create_scripts import make_repo_script_list``).
+    """
+    from swebench.harness.test_spec import test_spec as ts
+
+    if getattr(ts.make_repo_script_list, "_nano_deleted_branch_patch", False):
+        return
+    orig = ts.make_repo_script_list
+
+    def patched(specs, repo, repo_directory, base_commit, env_name):
+        cmds = orig(specs, repo, repo_directory, base_commit, env_name)
+        if repo not in _DELETED_BRANCH_REPOS:
+            return cmds
+        out = []
+        for c in cmds:
+            if c.startswith("git clone -o origin ") and "--single-branch" in c:
+                c = f"git clone -o origin https://github.com/{repo} {repo_directory}"
+            out.append(c)
+            if c.startswith(f"cd {repo_directory}"):
+                # Ensure the (possibly branch-orphaned) base_commit is present.
+                out.append(f"git fetch origin {base_commit}")
+        return out
+
+    patched._nano_deleted_branch_patch = True
+    ts.make_repo_script_list = patched
+
 
 def prebuild_images(rows: list[dict], workers: int, log_dir: Path) -> set[str]:
     """Build base/env/instance images for every row; return built instance ids.
