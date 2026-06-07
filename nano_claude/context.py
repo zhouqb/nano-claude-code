@@ -83,6 +83,24 @@ ENGINEERING_PRINCIPLES = (
     "back and reconsider the root cause instead of retrying."
 )
 
+VERIFICATION = (
+    "Verifying your work:\n"
+    "- Before reporting a task complete, verify it actually works: run the test, "
+    "execute the script, check the output. Reading the code and concluding it "
+    "looks correct is not verification. If you genuinely cannot verify (no test "
+    "exists, the code can't be run here), say so explicitly rather than implying "
+    "success.\n"
+    "- Verify against the behaviour the request actually describes, not a proxy "
+    "you chose because it was easy to run. A passing test you picked, or your own "
+    "scratch script, only counts if it genuinely exercises the reported problem; "
+    "when fixing a bug, reproduce the original symptom first and confirm your "
+    "change makes that exact symptom go away.\n"
+    "- Report outcomes faithfully. If tests fail, say so and show the relevant "
+    "output; if you skipped a verification step, say that rather than implying it "
+    'passed. Never claim "all tests pass" when the output shows failures, and '
+    "never weaken, skip, or narrow a failing check to manufacture a green result."
+)
+
 
 def _git_branch(cwd: str) -> str | None:
     try:
@@ -143,6 +161,7 @@ def build_system_prompt(cwd: str | None = None, settings: object | None = None) 
         APPROACH,
         CONVENTIONS,
         ENGINEERING_PRINCIPLES,
+        VERIFICATION,
         build_environment_block(cwd),
     ]
     claude_md = _read_project_instructions(cwd)

@@ -42,6 +42,19 @@ def test_system_prompt_includes_engineering_principles(tmp_path):
     assert "step back and reconsider the root cause" in prompt
 
 
+def test_system_prompt_includes_verification(tmp_path):
+    prompt = build_system_prompt(str(tmp_path)).lower()
+    # verify before claiming done; reading code is not verification
+    assert "before reporting a task complete" in prompt
+    assert "reading the code" in prompt
+    # verify against the real behaviour, not an easy proxy; reproduce the symptom
+    assert "not a proxy" in prompt
+    assert "reproduce the original symptom" in prompt
+    # honest reporting: no fake green
+    assert "all tests pass" in prompt
+    assert "manufacture a green result" in prompt
+
+
 def test_system_prompt_includes_conventions(tmp_path):
     prompt = build_system_prompt(str(tmp_path)).lower()
     assert "follow the conventions" in prompt
