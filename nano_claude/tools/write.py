@@ -41,17 +41,10 @@ class WriteTool(Tool):
 
     async def call(self, args: WriteInput, context: ToolContext) -> ToolResult:
         path = self._resolve(args.file_path, context)
-        old_content: str | None = None
         if path.exists():
             if not path.is_file():
                 return ToolResult.fail(f"Path is not a file: {path}")
-            try:
-                async with aiofiles.open(path, encoding="utf-8") as f:
-                    old_content = await f.read()
-            except OSError as exc:
-                return ToolResult.fail(f"Could not read existing file {path}: {exc}")
-
-            stale_error = self._stale_write_error(path, old_content, context)
+            stale_error = self._stale_write_error(path, context)
             if stale_error is not None:
                 return ToolResult.fail(stale_error)
 
@@ -73,13 +66,17 @@ class WriteTool(Tool):
         return ToolResult(output=f"Wrote {line_count} line(s) to {path}")
 
     @staticmethod
-    def _stale_write_error(path: Path, content: str, context: ToolContext) -> str | None:
+    def _stale_write_error(path: Path, context: ToolContext) -> str | None:
+        # Same model as Edit: the existing file must have been read this session,
+        # and must not have changed on disk since (keyed on mtime, so a partial
+        # read still counts). See EditTool._stale_write_error for the rationale.
         snapshot = context.read_file_state.get(str(path))
-        if snapshot is None or snapshot.is_partial_view:
+        if snapshot is None:
             return "File has not been read yet. Read it first before writing to it."
-        if content != snapshot.content:
-            return (
-                "File has been modified since read. Read it again before attempting "
-                "to write it."
-            )
+        try:
+            current_mtime = path.stat().st_mtime
+        except OSError:
+            return None
+        if current_mtime != snapshot.timestamp:
+            return "File has been modified since read. Read it again before attempting to write it."
         return None

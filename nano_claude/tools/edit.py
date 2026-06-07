@@ -77,7 +77,7 @@ class EditTool(Tool):
         except OSError as exc:
             return ToolResult.fail(f"Could not read {path}: {exc}")
 
-        stale_error = self._stale_write_error(path, content, context)
+        stale_error = self._stale_write_error(path, context)
         if stale_error is not None:
             return ToolResult.fail(stale_error)
 
@@ -108,13 +108,21 @@ class EditTool(Tool):
         return ToolResult(output=f"Replaced {replaced} occurrence(s) in {path}")
 
     @staticmethod
-    def _stale_write_error(path: Path, content: str, context: ToolContext) -> str | None:
+    def _stale_write_error(path: Path, context: ToolContext) -> str | None:
+        # Mirrors Claude Code's guards: the file must have been read at least
+        # once this session, and must not have changed on disk since. A partial
+        # (offset/limit or truncated) read counts as a read — correctness of the
+        # edit itself is enforced by the old_string found/unique checks below, so
+        # there is no need to have seen the whole file. Staleness is keyed on the
+        # file's mtime (not full-content equality, which a partial snapshot can't
+        # satisfy since it only holds the slice that was shown).
         snapshot = context.read_file_state.get(str(path))
-        if snapshot is None or snapshot.is_partial_view:
+        if snapshot is None:
             return "File has not been read yet. Read it first before editing it."
-        if content != snapshot.content:
-            return (
-                "File has been modified since read. Read it again before attempting "
-                "to edit it."
-            )
+        try:
+            current_mtime = path.stat().st_mtime
+        except OSError:
+            return None
+        if current_mtime != snapshot.timestamp:
+            return "File has been modified since read. Read it again before attempting to edit it."
         return None

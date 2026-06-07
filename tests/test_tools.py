@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 
 import pytest
@@ -195,6 +196,86 @@ async def test_write_existing_succeeds_after_read(tmp_path):
     result = await WriteTool().call(WriteInput(file_path=str(f), content="new"), context)
     assert not result.is_error
     assert f.read_text() == "new"
+
+
+# --- Edit/Write after a partial read (the is_partial_view fix) --------------
+# Real Claude Code treats a partial (offset/limit or truncated) read as a read:
+# editing is gated on read-before-edit + mtime staleness, and correctness is
+# enforced by old_string found/unique — not by having seen the whole file.
+
+
+async def test_edit_after_offset_read_succeeds(tmp_path):
+    f = tmp_path / "a.txt"
+    f.write_text("\n".join(f"line {i}" for i in range(1, 51)))
+    context = ctx(tmp_path)
+    # A partial read (offset>0) records a partial-view snapshot.
+    partial = await ReadTool().call(ReadInput(file_path=str(f), offset=10, limit=5), context)
+    assert not partial.is_error
+    assert context.read_file_state[str(f)].is_partial_view is True
+    # Editing a unique string anywhere in the file still works.
+    result = await EditTool().call(
+        EditInput(file_path=str(f), old_string="line 1\n", new_string="LINE 1\n"), context
+    )
+    assert not result.is_error, result.output
+    assert f.read_text().startswith("LINE 1\n")
+
+
+async def test_edit_after_truncated_large_read_succeeds(tmp_path):
+    f = tmp_path / "big.py"
+    # Larger than Read's default 2000-line limit, so a full read is truncated
+    # and recorded as a partial view.
+    f.write_text("\n".join(f"x = {i}" for i in range(3000)) + "\nTARGET = 0\n")
+    context = ctx(tmp_path)
+    full = await ReadTool().call(ReadInput(file_path=str(f)), context)
+    assert "truncated" in full.output
+    assert context.read_file_state[str(f)].is_partial_view is True
+    result = await EditTool().call(
+        EditInput(file_path=str(f), old_string="TARGET = 0", new_string="TARGET = 1"), context
+    )
+    assert not result.is_error, result.output
+    assert "TARGET = 1" in f.read_text()
+
+
+async def test_edit_unfound_string_after_partial_read_errors(tmp_path):
+    # The old_string check is still the correctness guard for partial reads.
+    f = tmp_path / "a.txt"
+    f.write_text("\n".join(f"line {i}" for i in range(1, 51)))
+    context = ctx(tmp_path)
+    await ReadTool().call(ReadInput(file_path=str(f), offset=10, limit=5), context)
+    result = await EditTool().call(
+        EditInput(file_path=str(f), old_string="not present anywhere", new_string="z"), context
+    )
+    assert result.is_error
+    assert "not found" in result.output
+
+
+async def test_edit_partial_read_then_external_modify_errors(tmp_path):
+    # Staleness still fires after a partial read if the file changes on disk.
+    f = tmp_path / "a.txt"
+    f.write_text("\n".join(f"line {i}" for i in range(1, 51)))
+    context = ctx(tmp_path)
+    await ReadTool().call(ReadInput(file_path=str(f), offset=10, limit=5), context)
+    snap = context.read_file_state[str(f)]
+    f.write_text("\n".join(f"line {i}" for i in range(1, 60)))
+    # Force a distinct mtime regardless of filesystem timestamp granularity.
+    os.utime(f, (snap.timestamp + 2, snap.timestamp + 2))
+    result = await EditTool().call(
+        EditInput(file_path=str(f), old_string="line 1\n", new_string="LINE 1\n"), context
+    )
+    assert result.is_error
+    assert "modified since read" in result.output
+
+
+async def test_write_after_partial_read_succeeds(tmp_path):
+    f = tmp_path / "big.py"
+    f.write_text("\n".join(f"x = {i}" for i in range(3000)))
+    context = ctx(tmp_path)
+    full = await ReadTool().call(ReadInput(file_path=str(f)), context)
+    assert "truncated" in full.output
+    assert context.read_file_state[str(f)].is_partial_view is True
+    result = await WriteTool().call(WriteInput(file_path=str(f), content="rewritten\n"), context)
+    assert not result.is_error, result.output
+    assert f.read_text() == "rewritten\n"
 
 
 # --- Glob -------------------------------------------------------------------
