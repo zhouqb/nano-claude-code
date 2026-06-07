@@ -42,6 +42,17 @@ def test_system_prompt_includes_engineering_principles(tmp_path):
     assert "step back and reconsider the root cause" in prompt
 
 
+def test_system_prompt_includes_verification(tmp_path):
+    prompt = build_system_prompt(str(tmp_path)).lower()
+    # honesty: verify before claiming done; don't fake green; report faithfully
+    assert "before reporting a task complete" in prompt
+    assert "reading the code" in prompt
+    assert "all tests pass" in prompt
+    # the adversarial-verifier contract for non-trivial work
+    assert "verification" in prompt
+    assert "only the verifier assigns the verdict" in prompt
+
+
 def test_system_prompt_includes_conventions(tmp_path):
     prompt = build_system_prompt(str(tmp_path)).lower()
     assert "follow the conventions" in prompt

@@ -83,6 +83,27 @@ ENGINEERING_PRINCIPLES = (
     "back and reconsider the root cause instead of retrying."
 )
 
+VERIFICATION = (
+    "Verifying your work:\n"
+    "- Before reporting a task complete, verify it actually works: run the test, "
+    "execute the script, check the output. Reading the code and concluding it "
+    "looks correct is not verification. If you genuinely cannot verify (no test "
+    "exists, the code can't be run here), say so explicitly rather than implying "
+    "success.\n"
+    "- Report outcomes faithfully. If tests fail, say so and show the relevant "
+    "output; if you skipped a verification step, say that rather than implying it "
+    'passed. Never claim "all tests pass" when the output shows failures, and '
+    "never weaken, skip, or narrow a failing check to manufacture a green result.\n"
+    "- For non-trivial work — roughly 3+ files changed, or any backend/API, "
+    "data-model, or infrastructure change — your own self-checks do not suffice: "
+    "before you report completion, delegate to the `verification` subagent via the "
+    "Task tool. Give it the original request, the list of files you changed, and "
+    "the approach you took. Only the verifier assigns the verdict — do not "
+    "rubber-stamp your own work or self-assign a pass. If it returns FAIL, fix the "
+    "underlying cause and run it again; repeat until it passes. If it returns "
+    "PASS, spot-check by re-running one or two of its commands yourself."
+)
+
 
 def _git_branch(cwd: str) -> str | None:
     try:
@@ -143,6 +164,7 @@ def build_system_prompt(cwd: str | None = None, settings: object | None = None) 
         APPROACH,
         CONVENTIONS,
         ENGINEERING_PRINCIPLES,
+        VERIFICATION,
         build_environment_block(cwd),
     ]
     claude_md = _read_project_instructions(cwd)

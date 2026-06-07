@@ -51,6 +51,32 @@ def test_load_agents_registers_builtin(tmp_path):
     assert any(a.name == "general-purpose" for a in loaded)
 
 
+def test_load_agents_registers_verification(tmp_path):
+    clear_agents()
+    loaded = load_agents(tmp_path / "nope")
+    agent = get_agent("verification")
+    assert agent is not None
+    assert any(a.name == "verification" for a in loaded)
+    # adversarial framing and the red→green / VERDICT contract are present
+    assert "try to break it" in agent.system_prompt.lower()
+    assert "VERDICT:" in agent.system_prompt
+    assert "reproduce the original bug" in agent.system_prompt.lower()
+
+
+def test_verification_agent_is_read_only(tmp_path):
+    clear_agents()
+    load_agents(tmp_path / "nope")
+    agent = get_agent("verification")
+    # The verifier may run things and read, but must not be able to edit/write.
+    assert "Edit" not in (agent.tools or [])
+    assert "Write" not in (agent.tools or [])
+    # Even unrestricted-tool resolution always drops Task; here the explicit
+    # allow-list must resolve to exactly the read-only subset.
+    resolved = _resolve_allowed_tools(agent, PermissionMode.DEFAULT)
+    assert "Edit" not in resolved and "Write" not in resolved and "Task" not in resolved
+    assert "Bash" in resolved and "Read" in resolved
+
+
 def test_load_agents_from_markdown(tmp_path):
     clear_agents()
     (tmp_path / "reviewer.md").write_text(
@@ -217,9 +243,7 @@ async def test_subagent_cannot_call_task(monkeypatch):
 async def test_subagent_emitting_task_is_refused(monkeypatch):
     """Even if a subagent emits an (unadvertised) Task call, it's refused at
     resolution — no nested subagent is spawned (recursion cap holds)."""
-    task_args = json.dumps(
-        {"subagent_type": "explorer", "description": "x", "prompt": "recurse"}
-    )
+    task_args = json.dumps({"subagent_type": "explorer", "description": "x", "prompt": "recurse"})
     streams = iter(
         [
             [tool_call_chunk(0, "c1", "Task", task_args), usage_chunk(5, 2)],  # tries Task
@@ -248,7 +272,5 @@ async def test_subagent_emitting_task_is_refused(monkeypatch):
     # Exactly two model calls — a third would mean a nested subagent was spawned.
     assert calls["n"] == 2
     # The refused Task surfaced as a tool result rather than running.
-    tool_results = [
-        m for msgs in calls["messages"] for m in msgs if m.get("role") == "tool"
-    ]
+    tool_results = [m for msgs in calls["messages"] for m in msgs if m.get("role") == "tool"]
     assert any("not permitted" in m["content"] for m in tool_results)
