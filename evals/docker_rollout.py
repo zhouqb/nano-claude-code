@@ -64,6 +64,15 @@ _FORWARD_ENV_KEYS = (
     "AZURE_API_KEY",
     "AZURE_API_BASE",
     "LITELLM_PROXY_API_KEY",
+    # Opt-in telemetry: forwarded by name so the in-container agent emits traces
+    # to a host collector (e.g. Jaeger via OTLP). All no-op unless set on the host.
+    "NANO_CLAUDE_TELEMETRY",
+    "NANO_CLAUDE_TELEMETRY_TRACES",
+    "NANO_CLAUDE_TELEMETRY_CONSOLE",
+    "NANO_CLAUDE_TELEMETRY_OTLP_LOGS",
+    "OTEL_EXPORTER_OTLP_ENDPOINT",
+    "OTEL_EXPORTER_OTLP_PROTOCOL",
+    "OTEL_SERVICE_NAME",
 )
 
 
@@ -322,6 +331,11 @@ def _setup_nano(container: str, tooling: Tooling) -> None:
         timeout=900,
     )
     _check(r, "uv venv")
+    # Pull in the OTel SDK + OTLP exporter only when telemetry is being forwarded;
+    # without the [otel] extra the instrumentation no-ops even with the env set.
+    wheel_spec = f"/tmp/{tooling.wheel.name}"
+    if os.environ.get("NANO_CLAUDE_TELEMETRY"):
+        wheel_spec += "[otel]"
     r = _exec(
         container,
         [
@@ -330,7 +344,7 @@ def _setup_nano(container: str, tooling: Tooling) -> None:
             "install",
             "--python",
             f"{NANO_DIR}/bin/python",
-            f"/tmp/{tooling.wheel.name}",
+            wheel_spec,
         ],
         env=uv_env,
         timeout=1800,
