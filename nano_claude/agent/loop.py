@@ -444,6 +444,7 @@ async def query_loop(
                 return LoopResult(StopReason.BLOCKED, state.turn_count, notice)
 
             text_parts: list[str] = []
+            reasoning_parts: list[str] = []
             tool_calls: list[dict] = []
             last_chunk = None
             started = False
@@ -460,9 +461,11 @@ async def query_loop(
                     req_span.set_attribute(
                         "gen_ai.request.reasoning_effort", config.reasoning_effort
                     )
-                # Set the prompt-only view up front so a failed/aborted request
-                # still shows what was sent; overwritten with the full exchange
-                # (prompt + assistant reply) once streaming completes.
+                # ``gen_ai.messages`` holds the request input only; the assistant
+                # reply lives in ``gen_ai.response`` (set after streaming). Keeping
+                # them as two attributes — input first, response after — makes the
+                # exchange easier to read in the span, and a failed/aborted request
+                # still shows exactly what was sent.
                 set_content_attribute(req_span, "gen_ai.messages", view.messages)
                 try:
                     # litellm translates the unified ``reasoning_effort`` to the
@@ -494,6 +497,12 @@ async def query_loop(
                         if not choices:
                             continue
                         delta = choices[0].delta
+                        # Thinking models (DeepSeek, Claude) stream their reasoning
+                        # in a field separate from ``content``. Captured for the
+                        # trace + log file only — never fed back to the model.
+                        reasoning = getattr(delta, "reasoning_content", None)
+                        if reasoning:
+                            reasoning_parts.append(reasoning)
                         content = getattr(delta, "content", None)
                         if content:
                             if not started and callbacks.on_assistant_start:
@@ -517,15 +526,22 @@ async def query_loop(
                     record_input_tokens(state, last_chunk)
                     _annotate_request_span(req_span, last_chunk)
                 req_span.set_attribute("gen_ai.response.tool_call_count", len(tool_calls))
-                # Append the assistant reply as the final message so the span
-                # carries the whole exchange in one ordered, reviewable field.
-                assistant_msg: dict[str, Any] = {
-                    "role": "assistant",
-                    "content": "".join(text_parts),
-                }
+                # The assistant reply, broken into its parts (reasoning first, then
+                # content, then the calls it requested) so it reads top-to-bottom in
+                # the span and sits visually after ``gen_ai.messages``.
+                reasoning_text = "".join(reasoning_parts)
+                response_payload: dict[str, Any] = {"content": "".join(text_parts)}
+                if reasoning_text:
+                    response_payload = {"reasoning": reasoning_text, **response_payload}
                 if tool_calls:
-                    assistant_msg["tool_calls"] = _to_assistant_tool_calls(tool_calls)
-                set_content_attribute(req_span, "gen_ai.messages", [*view.messages, assistant_msg])
+                    response_payload["tool_calls"] = _to_assistant_tool_calls(tool_calls)
+                set_content_attribute(req_span, "gen_ai.response", response_payload)
+                # Reasoning is captured for the trace + log file but deliberately
+                # kept out of state.messages, so it is never sent back to the model.
+                if reasoning_text:
+                    log.info(
+                        "assistant reasoning (%d chars): %s", len(reasoning_text), reasoning_text
+                    )
             state.turn_count += 1
 
             final_text = "".join(text_parts)
