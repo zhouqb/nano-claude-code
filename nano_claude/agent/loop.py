@@ -386,6 +386,7 @@ async def query_loop(
         # Carried so the Task tool can spawn a subagent that inherits the model,
         # rolls its cost up here, and shares the permission path.
         parent_model=config.model,
+        parent_reasoning_effort=config.reasoning_effort,
         token_usage_sink=state.token_usage,
         settings=settings,
         prompter=prompter,
@@ -455,18 +456,31 @@ async def query_loop(
             ) as req_span:
                 req_span.set_attribute("gen_ai.operation.name", "chat")
                 req_span.set_attribute("gen_ai.request.model", config.model)
+                if config.reasoning_effort is not None:
+                    req_span.set_attribute(
+                        "gen_ai.request.reasoning_effort", config.reasoning_effort
+                    )
                 # Set the prompt-only view up front so a failed/aborted request
                 # still shows what was sent; overwritten with the full exchange
                 # (prompt + assistant reply) once streaming completes.
                 set_content_attribute(req_span, "gen_ai.messages", view.messages)
                 try:
+                    # litellm translates the unified ``reasoning_effort`` to the
+                    # right per-provider payload (OpenAI native / Anthropic +
+                    # DeepSeek ``thinking``); omit it entirely when unset.
+                    extra_params = (
+                        {"reasoning_effort": config.reasoning_effort}
+                        if config.reasoning_effort is not None
+                        else {}
+                    )
                     response = await _call_with_retry(
-                        lambda v=view: litellm.acompletion(
+                        lambda v=view, ep=extra_params: litellm.acompletion(
                             model=config.model,
                             messages=v.messages,
                             tools=tool_schemas or None,
                             stream=True,
                             stream_options={"include_usage": True},
+                            **ep,
                         )
                     )
 

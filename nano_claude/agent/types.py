@@ -63,10 +63,20 @@ class TokenUsage:
             self.cache_read_tokens += getattr(details, "cached_tokens", 0) or 0
 
 
+# Unified reasoning-effort levels accepted by litellm across OpenAI, Anthropic,
+# and DeepSeek. ``None`` (the AgentConfig default) omits the param entirely so
+# each provider uses its own default. ``"none"`` explicitly disables thinking.
+REASONING_EFFORTS = ("minimal", "low", "medium", "high", "none")
+
+
 @dataclass
 class AgentConfig:
     model: str = "deepseek/deepseek-v4-flash"
     max_turns: int = 200
+    # Reasoning/thinking effort forwarded to litellm.acompletion. litellm maps
+    # this unified knob per provider: native ``reasoning_effort`` for OpenAI,
+    # ``thinking`` for Anthropic/DeepSeek. None = omit (provider default).
+    reasoning_effort: str | None = None
     permission_mode: PermissionMode = PermissionMode.DEFAULT
     auto_compact: bool = True
     context_collapse: bool = False  # Layer 4 (experimental); off by default

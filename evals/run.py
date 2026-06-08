@@ -40,6 +40,7 @@ from evals.docker_rollout import (
 )
 from evals.report import aggregate, build_results, print_summary, write_results
 from evals.types import EvalStatus, InstanceEval, RolloutStatus
+from nano_claude.agent.types import REASONING_EFFORTS
 
 console = Console()
 
@@ -170,6 +171,13 @@ def _select(
 @click.option("--output", default=None, help="Run directory (default: runs/<dataset>-<n>-<seed>).")
 @click.option("--model", default=None, help="Agent model (default: nano-claude's default).")
 @click.option("--max-turns", default=200, show_default=True)
+@click.option(
+    "--reasoning-effort",
+    type=click.Choice(list(REASONING_EFFORTS)),
+    default=None,
+    help="Thinking effort for the agent (OpenAI/Claude/DeepSeek via litellm). "
+    "Default: omit (provider default). Overrides NANO_CLAUDE_REASONING_EFFORT.",
+)
 @click.option("--task-timeout", default=1800, show_default=True, help="Per-case agent budget (s).")
 @click.option("--eval-timeout", default=1800, show_default=True, help="Per-case test timeout (s).")
 @click.option(
@@ -232,6 +240,7 @@ def main(
     output,
     model,
     max_turns,
+    reasoning_effort,
     task_timeout,
     eval_timeout,
     workers,
@@ -270,6 +279,8 @@ def main(
     )
     if model:
         cfg.model = model
+    if reasoning_effort:
+        cfg.reasoning_effort = reasoning_effort
 
     console.print(f"[bold]Loading[/bold] {dataset}/{split}...")
     sampled = _select(adapter.load(), instance_ids, repos, sample, offset, seed)
@@ -289,7 +300,9 @@ def main(
         missing = sorted({t.instance_id for t in sampled} - built)
         console.print(f"[bold]Built/cached {len(built)}/{len(rows)}.[/bold]")
         if missing:
-            console.print(f"[yellow]{len(missing)} did NOT build (upstream recipe issues):[/yellow]")
+            console.print(
+                f"[yellow]{len(missing)} did NOT build (upstream recipe issues):[/yellow]"
+            )
             for iid in missing:
                 console.print(f"  {iid}")
         return

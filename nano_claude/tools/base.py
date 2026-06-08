@@ -44,6 +44,9 @@ class ToolContext:
     # loop (model inheritance, cost roll-up, shared permission path). Typed as
     # ``Any`` to avoid importing the loop/permission types here.
     parent_model: str = ""
+    # Reasoning effort the parent loop runs with, so a spawned subagent inherits
+    # the same thinking setting. None ⇒ provider default.
+    parent_reasoning_effort: str | None = None
     token_usage_sink: Any = None  # parent TokenUsage; subagents merge cost into it
     settings: Any = None  # permission Settings, shared with subagents
     prompter: Any = None  # permission prompter, shared with subagents

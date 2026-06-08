@@ -116,7 +116,7 @@ def present_key_names(environ: dict[str, str] | None = None) -> list[str]:
 
 def agent_argv(cfg: RolloutConfig) -> list[str]:
     """The in-container nano-claude command (one-shot, no prompting)."""
-    return [
+    argv = [
         NANO_BIN,
         "--stdin",
         "--model",
@@ -126,6 +126,9 @@ def agent_argv(cfg: RolloutConfig) -> list[str]:
         "--permission-mode",
         "bypassPermissions",
     ]
+    if cfg.reasoning_effort:
+        argv += ["--reasoning-effort", cfg.reasoning_effort]
+    return argv
 
 
 def _test_cmd(task: Task) -> str:
