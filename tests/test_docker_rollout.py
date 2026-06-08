@@ -32,3 +32,14 @@ def test_agent_argv_is_oneshot_nonprompting():
     assert argv[argv.index("--model") + 1] == "deepseek/deepseek-v4-flash"
     assert argv[argv.index("--max-turns") + 1] == "200"
     assert argv[argv.index("--permission-mode") + 1] == "bypassPermissions"
+
+
+def test_agent_argv_omits_reasoning_effort_by_default():
+    argv = agent_argv(RolloutConfig())
+    assert "--reasoning-effort" not in argv  # provider default unless asked
+
+
+def test_agent_argv_forwards_reasoning_effort():
+    cfg = RolloutConfig(reasoning_effort="high")
+    argv = agent_argv(cfg)
+    assert argv[argv.index("--reasoning-effort") + 1] == "high"

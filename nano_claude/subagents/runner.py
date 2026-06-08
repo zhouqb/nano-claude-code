@@ -43,6 +43,7 @@ async def run_subagent_loop(agent: AgentDefinition, prompt: str, parent: ToolCon
         permission_mode=parent.permission_mode,
         max_turns=SUBAGENT_MAX_TURNS,
         cwd=parent.cwd,
+        reasoning_effort=parent.parent_reasoning_effort,
     )
     sub_state = LoopState(
         messages=[

@@ -19,7 +19,13 @@ from rich.console import Console
 from rich.table import Table
 
 from nano_claude.agent.loop import query_loop
-from nano_claude.agent.types import AgentConfig, LoopState, StopReason, TokenUsage
+from nano_claude.agent.types import (
+    REASONING_EFFORTS,
+    AgentConfig,
+    LoopState,
+    StopReason,
+    TokenUsage,
+)
 from nano_claude.commands import (
     forget_directive,
     format_cost,
@@ -364,9 +370,7 @@ async def _repl(config: AgentConfig, settings: Settings, state: LoopState) -> No
                 # each turn, so mutating it here is enough. Re-resolve the context
                 # window so compaction thresholds track the new model.
                 config.model = target
-                config.context_window = _resolve_context_window(
-                    target, AgentConfig.context_window
-                )
+                config.context_window = _resolve_context_window(target, AgentConfig.context_window)
                 console.print(
                     format_model_switch(
                         target, config.context_window, model_supports_function_calling(target)
@@ -529,6 +533,13 @@ def _reset_state_for_clear(
 @click.option("--model", default=DEFAULT_MODEL, show_default=True, help="LiteLLM model string.")
 @click.option("--max-turns", default=200, show_default=True, help="Hard cap on loop iterations.")
 @click.option(
+    "--reasoning-effort",
+    type=click.Choice(list(REASONING_EFFORTS)),
+    default=None,
+    help="Thinking effort forwarded to the model (OpenAI/Claude/DeepSeek via "
+    "litellm). Omitted by default (provider default); 'none' disables thinking.",
+)
+@click.option(
     "--permission-mode",
     type=click.Choice([m.value for m in PermissionMode]),
     default=PermissionMode.DEFAULT.value,
@@ -565,6 +576,7 @@ def cli(
     ctx: click.Context,
     model: str,
     max_turns: int,
+    reasoning_effort: str | None,
     permission_mode: str,
     resume: bool,
     stdin_prompt: bool,
@@ -589,6 +601,7 @@ def cli(
     config = AgentConfig(
         model=model,
         max_turns=max_turns,
+        reasoning_effort=reasoning_effort,
         permission_mode=PermissionMode(permission_mode),
         context_collapse=context_collapse,
         tool_result_preview_format=tool_preview_format,
@@ -600,10 +613,14 @@ def cli(
 
     try:
         runner = _run_single_turn if one_shot_prompt is not None else _repl
-        args = (config, settings, state, one_shot_prompt) if one_shot_prompt is not None else (
-            config,
-            settings,
-            state,
+        args = (
+            (config, settings, state, one_shot_prompt)
+            if one_shot_prompt is not None
+            else (
+                config,
+                settings,
+                state,
+            )
         )
         asyncio.run(runner(*args))
     except KeyboardInterrupt:
