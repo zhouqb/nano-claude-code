@@ -8,7 +8,7 @@ import json
 import pytest
 
 from evals.datasets import available, get_adapter
-from evals.patch_utils import changed_paths, strip_paths
+from evals.patch_utils import changed_paths, is_test_path, strip_paths
 from evals.report import aggregate, build_results
 from evals.types import EvalStatus, InstanceEval, RolloutStatus
 
@@ -48,6 +48,56 @@ def test_strip_paths_noop_when_empty():
     assert strip_paths(SAMPLE_DIFF, set()) == SAMPLE_DIFF
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        "tests/test_app.py",
+        "sympy/core/tests/test_basic.py",
+        "lib/matplotlib/tests/test_text.py",
+        "tests/conftest.py",
+        "foo/bar_test.py",
+        "tests/helpers.py",  # non-test-named, but under a tests/ tree
+    ],
+)
+def test_is_test_path_true(path):
+    assert is_test_path(path) is True
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "src/app.py",
+        "sympy/core/basic.py",
+        # Importable SOURCE trees that must NOT be mistaken for tests:
+        "django/test/utils.py",  # django's test framework is shipped source
+        "django/test/client.py",
+        "lib/matplotlib/testing/decorators.py",  # matplotlib.testing is source
+        "pkg/contest.py",  # not conftest
+        "tests/data/fixture.json",  # not a .py file
+    ],
+)
+def test_is_test_path_false(path):
+    assert is_test_path(path) is False
+
+
+def test_strip_reverts_agent_test_files_but_keeps_source():
+    # The agent's source fix survives; its new test file is reverted out.
+    diff = (
+        "diff --git a/django/test/utils.py b/django/test/utils.py\n"
+        "index 1..2 100644\n--- a/django/test/utils.py\n+++ b/django/test/utils.py\n"
+        "@@ -1 +1 @@\n-old\n+fixed\n"
+        "diff --git a/tests/test_new.py b/tests/test_new.py\n"
+        "new file mode 100644\n--- /dev/null\n+++ b/tests/test_new.py\n"
+        "@@ -0,0 +1 @@\n+def test_repro(): assert True\n"
+    )
+    drop = {p for p in changed_paths(diff) if is_test_path(p)}
+    stripped = strip_paths(diff, drop)
+    assert "django/test/utils.py" in stripped  # source fix kept
+    assert "+fixed" in stripped
+    assert "tests/test_new.py" not in stripped  # agent test reverted
+    assert "test_repro" not in stripped
+
+
 # --- analyze ------------------------------------------------------------------
 
 
@@ -63,12 +113,30 @@ def test_analyze_aggregate_and_merge(tmp_path):
     from evals.analyze import merge_suggestions
 
     rows = [
-        {"instance_id": "a-1", "repo": "o/a", "resolved": "True", "failure_category": "",
-         "env_ready": "True", "improvement_suggestion": ""},
-        {"instance_id": "a-2", "repo": "o/a", "resolved": "False", "failure_category": "tests_failed",
-         "env_ready": "True", "improvement_suggestion": ""},
-        {"instance_id": "b-1", "repo": "o/b", "resolved": "False", "failure_category": "empty_patch",
-         "env_ready": "False", "improvement_suggestion": ""},
+        {
+            "instance_id": "a-1",
+            "repo": "o/a",
+            "resolved": "True",
+            "failure_category": "",
+            "env_ready": "True",
+            "improvement_suggestion": "",
+        },
+        {
+            "instance_id": "a-2",
+            "repo": "o/a",
+            "resolved": "False",
+            "failure_category": "tests_failed",
+            "env_ready": "True",
+            "improvement_suggestion": "",
+        },
+        {
+            "instance_id": "b-1",
+            "repo": "o/b",
+            "resolved": "False",
+            "failure_category": "empty_patch",
+            "env_ready": "False",
+            "improvement_suggestion": "",
+        },
     ]
     csv_path = tmp_path / "analysis.csv"
     _write_csv(csv_path, rows)
@@ -80,9 +148,13 @@ def test_analyze_aggregate_and_merge(tmp_path):
     assert summary["env_ready_counts"] == {"True": 2, "False": 1}
     assert summary["per_repo"]["o/a"]["resolved"] == 1
 
-    (tmp_path / "sugg.json").write_text(json.dumps({
-        "a-2": {"root_cause": "rc", "improvement_suggestion": "do X"},
-    }))
+    (tmp_path / "sugg.json").write_text(
+        json.dumps(
+            {
+                "a-2": {"root_cause": "rc", "improvement_suggestion": "do X"},
+            }
+        )
+    )
     merged, over = merge_suggestions(tmp_path, tmp_path / "sugg.json")
     assert merged == 1 and over == []
     by_id = {r["instance_id"]: r for r in csv.DictReader(csv_path.open())}
@@ -101,7 +173,12 @@ def test_analyze_build_review(tmp_path):
     (tmp_path / "failures" / "a-2" / "test_output.txt").write_text("E   AssertionError: nope\n")
     rows = [
         {"instance_id": "a-1", "repo": "o/a", "resolved": "True", "failure_category": ""},
-        {"instance_id": "a-2", "repo": "o/a", "resolved": "False", "failure_category": "tests_failed"},
+        {
+            "instance_id": "a-2",
+            "repo": "o/a",
+            "resolved": "False",
+            "failure_category": "tests_failed",
+        },
     ]
     md = build_review(tmp_path, rows).read_text()
     assert "a-2" in md and "CHANGED" in md and "AssertionError" in md

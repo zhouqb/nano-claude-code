@@ -21,7 +21,39 @@ _LOCAL_EXCLUDE = [
     "*.sqlite3",
     "*.sqlite",
     "*.db",
+    # Scratch reproduction scripts the agent is told to write at the repo root —
+    # keep them out of the captured patch even if it forgets to use /tmp.
+    "repro*.py",
+    "reproduce*.py",
 ]
+
+# Directory name that marks a Python test tree across the SWE-bench repos
+# (django top-level ``tests/``; ``<pkg>/.../tests/`` in sympy, scikit-learn,
+# astropy, xarray, matplotlib; ``tests/`` in sphinx, pylint). Deliberately the
+# *plural* only: ``django/test/`` and ``matplotlib/testing/`` are importable
+# SOURCE trees, so matching ``test``/``testing`` would revert real fixes.
+_TEST_DIR_PARTS = frozenset({"tests"})
+
+
+def is_test_path(path: str) -> bool:
+    """Whether ``path`` is a Python test file whose edits should be reverted out
+    of the graded patch (so the agent may write tests to verify itself without
+    those changes ever reaching the grader).
+
+    Conservative by design — it matches the standard pytest/unittest conventions
+    the SWE-bench repos follow and never classifies package source as a test: a
+    path qualifies only when it is a ``.py`` whose basename looks like a test
+    (``test_*.py`` / ``*_test.py`` / ``conftest.py``) OR which sits under a
+    ``tests/`` directory.
+    """
+    parts = path.split("/")
+    base = parts[-1]
+    if not base.endswith(".py"):
+        return False
+    stem = base[:-3]
+    if base == "conftest.py" or stem.startswith("test_") or stem.endswith("_test"):
+        return True
+    return any(part in _TEST_DIR_PARTS for part in parts[:-1])
 
 
 def changed_paths(patch: str) -> set[str]:

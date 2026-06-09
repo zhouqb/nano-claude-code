@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from evals.config import RolloutConfig
-from evals.patch_utils import _LOCAL_EXCLUDE, changed_paths, strip_paths
+from evals.patch_utils import _LOCAL_EXCLUDE, changed_paths, is_test_path, strip_paths
 from evals.prompts import verify_addendum
 from evals.types import RolloutResult, RolloutStatus, Task
 
@@ -523,7 +523,11 @@ def run_task_docker(
         try:
             patch = _capture_patch(name)
             if cfg.strip_test_changes:
-                patch = strip_paths(patch, _test_paths(task))
+                # Revert every test-file change out of the graded patch: the
+                # instance's gold test files plus any other test file the agent
+                # added/edited to verify itself (only its source fix is graded).
+                drop = _test_paths(task) | {p for p in changed_paths(patch) if is_test_path(p)}
+                patch = strip_paths(patch, drop)
         except Exception as exc:  # noqa: BLE001
             if status is RolloutStatus.OK:
                 status = RolloutStatus.ERROR
