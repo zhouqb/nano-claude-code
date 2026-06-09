@@ -98,6 +98,24 @@ def test_strip_reverts_agent_test_files_but_keeps_source():
     assert "test_repro" not in stripped
 
 
+# --- verification pass prompt -------------------------------------------------
+
+
+def test_verification_pass_prompt_includes_issue_and_test_cmd():
+    from evals.prompts import verification_pass_prompt
+
+    out = verification_pass_prompt(
+        "astropy/astropy", "Header.fromstring crashes on bytes", "pytest -q"
+    )
+    assert "astropy/astropy" in out
+    assert "Header.fromstring crashes on bytes" in out
+    assert "pytest -q" in out
+    # The core mandate: independent, regression-hunting, must not empty the fix.
+    assert "INDEPENDENT" in out
+    assert "REGRESSION" in out.upper()
+    assert "never reverted to nothing" in out
+
+
 # --- analyze ------------------------------------------------------------------
 
 

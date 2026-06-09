@@ -32,6 +32,16 @@ class RolloutConfig:
     # Drop any edits the agent made to graded test files before capturing the
     # patch (they would collide with the harness's gold test patch).
     strip_test_changes: bool = True
+    # Run a second, independent nano-claude pass after the first one lands a
+    # non-empty patch: an adversarial verifier that re-checks the fix against
+    # the issue, hunts regressions in the existing suite, and repairs what it
+    # finds. Off by default; opt in with NANO_CLAUDE_VERIFY_PASS=1. See
+    # docker_rollout._run_verification_pass and prompts.verification_pass_prompt.
+    verify_pass: bool = bool(os.environ.get("NANO_CLAUDE_VERIFY_PASS"))
+    # Wall-clock budget for the verification pass (seconds); shorter than the
+    # main rollout since it is checking/repairing an existing fix, not solving
+    # from scratch.
+    verify_timeout: int = 900
 
     def resolved_bin(self) -> str:
         return self.nano_bin or default_nano_bin()
