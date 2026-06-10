@@ -29,7 +29,7 @@ from pathlib import Path
 
 from evals.config import RolloutConfig
 from evals.patch_utils import _LOCAL_EXCLUDE, changed_paths, is_test_path, strip_paths
-from evals.prompts import verify_addendum
+from evals.prompts import verification_pass_prompt, verify_addendum
 from evals.types import RolloutResult, RolloutStatus, Task
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -425,6 +425,69 @@ def _check(r: subprocess.CompletedProcess, what: str) -> None:
         raise RuntimeError(f"{what} failed (exit {r.returncode}): {err}")
 
 
+def _run_agent(
+    name: str, cfg: RolloutConfig, prompt: str, timeout: int, log
+) -> tuple[int | None, bool]:
+    """Run one nano-claude pass in container ``name``, streaming stdout to ``log``.
+
+    Returns ``(returncode, timed_out)``; ``returncode`` is ``None`` on timeout.
+    Both the rollout and the verification pass go through here so they share the
+    exact exec environment (testbed PATH, forwarded keys + telemetry, no memory).
+    """
+    agent = subprocess.Popen(
+        [
+            "docker",
+            "exec",
+            "-i",
+            "-w",
+            TESTBED,
+            "-e",
+            f"PATH={AGENT_PATH}",
+            "-e",
+            "NANO_CLAUDE_DISABLE_MEMORY=1",
+            *sum((["-e", k] for k in present_key_names()), []),
+            name,
+            *agent_argv(cfg),
+        ],
+        stdin=subprocess.PIPE,
+        stdout=log,
+        stderr=subprocess.STDOUT,
+        text=True,
+        env={**os.environ},
+    )
+    try:
+        agent.communicate(input=prompt, timeout=timeout)
+        return agent.returncode, False
+    except subprocess.TimeoutExpired:
+        agent.kill()
+        agent.communicate()  # reap the killed process
+        return None, True
+
+
+def _run_verification_pass(name: str, task: Task, cfg: RolloutConfig, log) -> None:
+    """Run an independent verifier pass over the first agent's edits, in place.
+
+    A second nano-claude, told it did NOT write the current changes, re-checks
+    them against the issue, hunts regressions in the existing suite, and repairs
+    what it finds (see ``prompts.verification_pass_prompt``). Best-effort: it
+    only runs when the first pass actually left a change to verify, and any
+    failure/timeout here is logged but never fails the task — the first-pass fix
+    still stands and is what gets captured.
+    """
+    if not _capture_patch(name).strip():
+        return  # nothing to verify
+    log.write("\n\n===== VERIFICATION PASS =====\n")
+    log.flush()
+    problem = task.extra.get("instance", {}).get("problem_statement", "")
+    prompt = verification_pass_prompt(task.repo, problem, _test_cmd(task))
+    rc, timed_out = _run_agent(name, cfg, prompt, cfg.verify_timeout, log)
+    if timed_out:
+        log.write(f"\n[verification pass exceeded {cfg.verify_timeout}s; keeping first-pass fix]\n")
+    elif rc != 0:
+        log.write(f"\n[verification pass exited {rc}; keeping first-pass fix]\n")
+    log.flush()
+
+
 def run_task_docker(
     task: Task,
     cfg: RolloutConfig,
@@ -488,36 +551,18 @@ def run_task_docker(
 
         prompt = task.prompt + verify_addendum(_test_cmd(task))
         with log_path.open("w") as log:
-            agent = subprocess.Popen(
-                [
-                    "docker",
-                    "exec",
-                    "-i",
-                    "-w",
-                    TESTBED,
-                    "-e",
-                    f"PATH={AGENT_PATH}",
-                    "-e",
-                    "NANO_CLAUDE_DISABLE_MEMORY=1",
-                    *sum((["-e", k] for k in present_key_names()), []),
-                    name,
-                    *agent_argv(cfg),
-                ],
-                stdin=subprocess.PIPE,
-                stdout=log,
-                stderr=subprocess.STDOUT,
-                text=True,
-                env={**os.environ},
-            )
-            try:
-                agent.communicate(input=prompt, timeout=cfg.task_timeout)
-                if agent.returncode != 0:
-                    status = RolloutStatus.ERROR
-                    error = f"nano-claude exited with code {agent.returncode}"
-            except subprocess.TimeoutExpired:
-                agent.kill()
+            rc, timed_out = _run_agent(name, cfg, prompt, cfg.task_timeout, log)
+            if timed_out:
                 status = RolloutStatus.TIMEOUT
                 error = f"agent exceeded {cfg.task_timeout}s"
+            elif rc != 0:
+                status = RolloutStatus.ERROR
+                error = f"nano-claude exited with code {rc}"
+
+            # Independent verifier pass over the first agent's edits (opt-in).
+            # Only when the first pass succeeded; its failures don't gate it.
+            if cfg.verify_pass and status is RolloutStatus.OK:
+                _run_verification_pass(name, task, cfg, log)
 
         patch = ""
         try:

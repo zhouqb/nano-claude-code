@@ -3,6 +3,7 @@
 from nano_claude.subagents.loader import (
     AGENT_REGISTRY,
     GENERAL_PURPOSE,
+    VERIFICATION,
     clear_agents,
     get_agent,
     load_agents,
@@ -14,6 +15,7 @@ from nano_claude.subagents.types import AgentDefinition
 __all__ = [
     "AGENT_REGISTRY",
     "GENERAL_PURPOSE",
+    "VERIFICATION",
     "AgentDefinition",
     "clear_agents",
     "get_agent",

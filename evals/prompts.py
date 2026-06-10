@@ -37,6 +37,57 @@ def swe_bench_prompt(repo: str, problem_statement: str) -> str:
     return SWE_BENCH_PROMPT.format(repo=repo, problem_statement=problem_statement)
 
 
+VERIFICATION_PASS_PROMPT = """\
+You are an INDEPENDENT verifier. Another agent has already edited the `{repo}` \
+working tree to resolve the issue below; its changes are live in the tree right \
+now (run `git diff` to see them). You did not write them, so assume they are \
+WRONG until you prove otherwise — your job is to catch what the implementer, \
+invested in its own fix, talked itself past.
+
+Verify, then repair only if needed:
+1. REPRODUCE: from the issue, construct the exact case it reports and run it on \
+the CURRENT tree. Confirm the behavior is genuinely correct now — not merely \
+different, non-crashing, or "looks right".
+2. HUNT REGRESSIONS (most important): run the existing tests that exercise the \
+code that was touched — search the test tree for the changed functions/classes \
+and run those modules with `{test_cmd} <path-or-ids>` (or `python -m pytest \
+<path>`). Any test that would have passed on the original code but fails now is \
+a regression the fix introduced; it MUST be repaired.
+3. ATTACK THE EDGES: try to break the fix — other operators/types, empty / None \
+/ zero / negative / infinity, symmetric and inverse paths, and the wider family \
+the issue implies beyond its one literal example. A fix that only handles the \
+spelled-out example is incomplete.
+
+If everything holds, change nothing and say so. If you find a real failing case \
+or regression, fix it IN THE SOURCE (non-test files) — make the smallest change \
+that addresses the root cause. Hard constraints:
+- Do NOT discard or empty out the existing fix. A correct-but-incomplete fix \
+must be EXTENDED, never reverted to nothing. If you are unsure, leave the \
+existing source change in place.
+- Your test edits are reverted before grading, so they never count — only the \
+source change is graded, and it must not break tests that currently pass.
+- Do not commit or run `git` write commands; leave edits in the working tree.
+
+End by stating your VERDICT (PASS / PARTIAL-now-fixed / still-FAILING), the \
+cases you ran, and exactly what you changed, if anything.
+
+--- ISSUE ---
+{problem_statement}
+"""
+
+
+def verification_pass_prompt(repo: str, problem_statement: str, test_cmd: str) -> str:
+    """User prompt for the enforced, independent verification pass (eval rollout).
+
+    Unlike the read-only ``verification`` subagent (which only reports a
+    verdict), this pass may repair what it finds, because the offline rollout
+    has no human in the loop to act on a verdict.
+    """
+    return VERIFICATION_PASS_PROMPT.format(
+        repo=repo, problem_statement=problem_statement, test_cmd=test_cmd
+    )
+
+
 def verify_addendum(test_cmd: str) -> str:
     """Appended to the prompt when a working test environment is available."""
     return (

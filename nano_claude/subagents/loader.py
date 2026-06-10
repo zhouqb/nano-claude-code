@@ -36,6 +36,49 @@ GENERAL_PURPOSE = AgentDefinition(
     ),
 )
 
+# An independent, adversarial verifier. The point of running it in a *separate*
+# context is structural: a fresh agent told to "try to break it" catches the
+# regressions and missed cases the implementer — invested in its own fix —
+# talks itself past. It is deliberately READ-ONLY (no Edit/Write): it does not
+# fix anything, it returns a verdict the caller acts on. Spawn it after you
+# believe a change is complete, handing it the original task and a summary of
+# what you changed.
+VERIFICATION = AgentDefinition(
+    name="verification",
+    description=(
+        "Independent, adversarial verifier for a change you believe is complete. "
+        "It reproduces the reported problem, checks the fix actually resolves it, "
+        "hunts for regressions and missed cases, and returns a VERDICT "
+        "(PASS / PARTIAL / FAIL) with evidence. Read-only — it reports, it does "
+        "not edit. Delegate to it before declaring a task done; pass the original "
+        "task plus a summary of what you changed and which files."
+    ),
+    tools=["Read", "Grep", "Glob", "Bash"],
+    system_prompt=(
+        "You are an independent verification subagent. A change has been made to "
+        "resolve a task and your job is to find out whether it is actually "
+        "correct and complete — assume it is NOT until the evidence shows "
+        "otherwise. You did not write the change, so you owe it no benefit of the "
+        "doubt. You are read-only: you VERIFY, you do not fix. Do not edit files.\n\n"
+        "Work from evidence, not from reading the diff and nodding:\n"
+        "1. REPRODUCE: from the task description, construct the case the change "
+        "claims to fix and run it. Confirm the new behavior is actually correct, "
+        "not just different or non-crashing.\n"
+        "2. HUNT REGRESSIONS: run the existing tests that exercise the code that "
+        "was touched (search the test tree for the changed symbols). Anything "
+        "that passed before and fails now is a regression — report it.\n"
+        "3. ATTACK THE EDGES: try to break the fix. Other operators/types, "
+        "empty / None / zero / negative / infinity, symmetric and inverse paths, "
+        "the cases the task implies beyond the one it spells out. A fix that "
+        "handles only the literal example is PARTIAL, not PASS.\n\n"
+        "You cannot ask follow-up questions. End with a single line\n"
+        "  VERDICT: PASS | PARTIAL | FAIL\n"
+        "followed by the specific evidence — the commands you ran and their "
+        "output, the exact cases that still fail, and what remains to be done. "
+        "Be concrete; the caller acts only on what you report."
+    ),
+)
+
 
 def register_agent(agent: AgentDefinition) -> None:
     AGENT_REGISTRY[agent.name] = agent
@@ -70,11 +113,12 @@ def _agent_from_markdown(path: Path) -> AgentDefinition:
 
 
 def load_agents(directory: Path | None = None) -> list[AgentDefinition]:
-    """Register the built-in agent plus every agent file in ``directory``."""
+    """Register the built-in agents plus every agent file in ``directory``."""
     register_agent(GENERAL_PURPOSE)
+    register_agent(VERIFICATION)
 
     directory = directory or DEFAULT_AGENTS_DIR
-    loaded: list[AgentDefinition] = [GENERAL_PURPOSE]
+    loaded: list[AgentDefinition] = [GENERAL_PURPOSE, VERIFICATION]
     if not directory.is_dir():
         return loaded
 
