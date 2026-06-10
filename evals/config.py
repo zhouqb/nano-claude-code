@@ -40,8 +40,8 @@ class RolloutConfig:
     verify_pass: bool = bool(os.environ.get("NANO_CLAUDE_VERIFY_PASS"))
     # Wall-clock budget for the verification pass (seconds); shorter than the
     # main rollout since it is checking/repairing an existing fix, not solving
-    # from scratch.
-    verify_timeout: int = 900
+    # from scratch — but still generous enough for max-reasoning to run tests.
+    verify_timeout: int = 1800
 
     def resolved_bin(self) -> str:
         return self.nano_bin or default_nano_bin()
