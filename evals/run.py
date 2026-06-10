@@ -44,7 +44,7 @@ from nano_claude.agent.types import REASONING_EFFORTS
 
 console = Console()
 
-MAX_WORKERS = 5
+MAX_WORKERS = 10
 
 CSV_FIELDS = [
     "idx",
@@ -170,7 +170,7 @@ def _select(
 @click.option("--repos", default="", help="Comma-separated repos (owner/name) to restrict to.")
 @click.option("--output", default=None, help="Run directory (default: runs/<dataset>-<n>-<seed>).")
 @click.option("--model", default=None, help="Agent model (default: nano-claude's default).")
-@click.option("--max-turns", default=200, show_default=True)
+@click.option("--max-turns", default=500, show_default=True)
 @click.option(
     "--reasoning-effort",
     type=click.Choice(list(REASONING_EFFORTS)),
@@ -178,7 +178,7 @@ def _select(
     help="Thinking effort for the agent (OpenAI/Claude/DeepSeek via litellm). "
     "Default: omit (provider default). Overrides NANO_CLAUDE_REASONING_EFFORT.",
 )
-@click.option("--task-timeout", default=1800, show_default=True, help="Per-case agent budget (s).")
+@click.option("--task-timeout", default=3600, show_default=True, help="Per-case agent budget (s).")
 @click.option("--eval-timeout", default=1800, show_default=True, help="Per-case test timeout (s).")
 @click.option(
     "--workers",

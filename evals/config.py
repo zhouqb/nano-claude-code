@@ -22,12 +22,12 @@ class RolloutConfig:
     """Knobs for invoking the agent on each task."""
 
     model: str = os.environ.get("NANO_CLAUDE_MODEL", "deepseek/deepseek-v4-flash")
-    max_turns: int = 200
+    max_turns: int = 500
     # Reasoning/thinking effort passed through to nano-claude (and on to litellm).
     # None ⇒ omit the flag (provider default); see AgentConfig.reasoning_effort.
     reasoning_effort: str | None = os.environ.get("NANO_CLAUDE_REASONING_EFFORT") or None
     # Per-task wall-clock budget for the agent process (seconds).
-    task_timeout: int = 1800
+    task_timeout: int = 3600
     nano_bin: str = ""
     # Drop any edits the agent made to graded test files before capturing the
     # patch (they would collide with the harness's gold test patch).
