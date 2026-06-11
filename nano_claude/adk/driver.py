@@ -37,6 +37,7 @@ from nano_claude.adk.callbacks import (
 )
 from nano_claude.adk.convert import event_to_messages
 from nano_claude.adk.patches import apply as _apply_adk_patches
+from nano_claude.adk.session_service import JsonlSessionService
 from nano_claude.adk.tool_adapter import NanoToolAdapter
 from nano_claude.agent.types import AgentConfig, LoopCallbacks, LoopResult, LoopState, StopReason
 from nano_claude.agent.types import TextCallback as TextCallback  # re-export for callers
@@ -138,11 +139,23 @@ async def run_turn(
         todos=state.todos,  # TodoWrite mutates this list in place
     )
 
-    def record(message: dict) -> None:
-        """Append a message to state and persist it (for crash recovery)."""
+    def track(message: dict) -> None:
+        """Append a message to canonical state (persistence handled elsewhere).
+
+        Used for event-derived messages: the JSONL write already happened in
+        ``JsonlSessionService.append_event`` when the Runner stored the event.
+        """
         state.messages.append(message)
         if message.get("role") == "assistant":
             state.last_assistant_at = time.time()  # Layer 3 microcompact time gate
+
+    def record(message: dict) -> None:
+        """Append a message to state *and* persist it (for crash recovery).
+
+        Used for injected messages (memory recall, todo reminders) that never
+        become ADK events, so the driver is their only writer.
+        """
+        track(message)
         if state.storage is not None:
             state.storage.append_message(message)
 
@@ -180,7 +193,14 @@ async def run_turn(
         on_tool_error_callback=make_on_tool_error_callback(),
     )
 
-    session_service = InMemorySessionService()
+    session_service: Any
+    if state.storage is not None:
+        # Persisted session: the service shares the open SessionStorage (and
+        # its debounce queue), so model/tool events land in the same JSONL.
+        session_service = JsonlSessionService(config.cwd)
+        session_service.adopt_storage(state.storage)
+    else:
+        session_service = InMemorySessionService()  # subagents: transport only
     adk_session = await session_service.create_session(
         app_name=_APP_NAME, user_id=_USER_ID, session_id=session_id or "subagent"
     )
@@ -211,6 +231,7 @@ async def run_turn(
             new_message=_last_user_content(state),
             run_config=run_config,
         )
+        seen_event_ids: set[str] = set()
         try:
             async for event in events:
                 if state.cancel_event.is_set():
@@ -240,9 +261,10 @@ async def run_turn(
                     log.info("assistant reasoning (%d chars): %s", len(reasoning), reasoning)
 
                 partial_parts.clear()  # response completed; nothing in flight
+                seen_event_ids.add(event.id)
                 recorded = event_to_messages(event)
                 for msg in recorded:
-                    record(msg)
+                    track(msg)  # session service persisted the event already
                 if event.content and event.content.role == "model":
                     if not recorded and gates.reason is None:
                         # A genuinely empty final response: keep the old loop's
@@ -259,11 +281,24 @@ async def run_turn(
                         )
         finally:
             await events.aclose()
-            # An abort (or an exception escaping mid-dispatch) can drop the
-            # function-response events for an already-recorded assistant
-            # tool_calls turn — the old loop could never end a turn that way,
-            # and an unanswered tool_call makes every later request API-invalid.
-            # Repair canonical state in place, byte-compatible with
+            # An abort (or an exception escaping mid-dispatch) can drop events
+            # the Runner already persisted via the session service — it appends
+            # *before* yielding. First reconcile canonical state from the ADK
+            # session so state.messages matches the JSONL (otherwise the repair
+            # below would double-answer a tool call that was persisted but
+            # never consumed, permanently corrupting the append-only session).
+            for event in adk_session.events:
+                if event.partial or event.id in seen_event_ids:
+                    continue
+                if event.author == "user":
+                    continue  # the new_message echo; the caller recorded it
+                seen_event_ids.add(event.id)
+                for msg in event_to_messages(event):
+                    track(msg)  # the service persisted it with the event
+            # Then answer any genuinely-unanswered tool_calls (the producer was
+            # cancelled before the tool finished) — the old loop could never
+            # end a turn that way, and an unanswered tool_call makes every
+            # later request API-invalid. Byte-compatible with
             # session.restore.repair_messages.
             resolved_ids = {
                 m.get("tool_call_id") for m in state.messages if m.get("role") == "tool"
