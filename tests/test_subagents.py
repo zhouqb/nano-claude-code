@@ -261,3 +261,59 @@ async def test_subagent_emitting_task_is_refused(monkeypatch):
     # The refused Task surfaced as a tool result rather than running.
     tool_results = [m for msgs in calls["messages"] for m in msgs if m.get("role") == "tool"]
     assert any("not permitted" in m["content"] for m in tool_results)
+
+
+async def test_subagent_hits_max_turns_gate(monkeypatch):
+    """A subagent that never stops requesting tools is capped at SUBAGENT_MAX_TURNS."""
+    from nano_claude.subagents.runner import SUBAGENT_MAX_TURNS
+
+    calls = {"n": 0}
+
+    async def _acompletion(*args, **kwargs):
+        calls["n"] += 1
+        return FakeStream(
+            [
+                tool_call_chunk(0, f"c{calls['n']}", "GlobTool", '{"pattern": "*.py"}'),
+                usage_chunk(5, 2),
+            ]
+        )
+
+    monkeypatch.setattr(litellm, "acompletion", _acompletion)
+
+    ctx = ToolContext(
+        cwd="/",
+        cancel_event=asyncio.Event(),
+        permission_mode=PermissionMode.BYPASS,
+        settings=Settings(),
+    )
+    result = await run_subagent_loop(get_agent("explorer"), "loop forever", ctx)
+
+    assert result.reason is StopReason.MAX_TURNS
+    assert result.turn_count == SUBAGENT_MAX_TURNS
+    assert calls["n"] == SUBAGENT_MAX_TURNS
+
+
+async def test_shared_cancel_event_aborts_subagent(monkeypatch):
+    """The parent's cancel_event stops a running subagent (Ctrl-C semantics)."""
+    cancel = asyncio.Event()
+    calls = {"n": 0}
+
+    async def _acompletion(*args, **kwargs):
+        calls["n"] += 1
+        cancel.set()  # parent aborts while the subagent's first request streams
+        return FakeStream(
+            [tool_call_chunk(0, "c1", "GlobTool", '{"pattern": "*.py"}'), usage_chunk(5, 2)]
+        )
+
+    monkeypatch.setattr(litellm, "acompletion", _acompletion)
+
+    ctx = ToolContext(
+        cwd="/",
+        cancel_event=cancel,
+        permission_mode=PermissionMode.BYPASS,
+        settings=Settings(),
+    )
+    result = await run_subagent_loop(get_agent("explorer"), "go", ctx)
+
+    assert result.reason is StopReason.ABORTED
+    assert calls["n"] == 1  # no second request once cancelled
