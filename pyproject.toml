@@ -59,3 +59,7 @@ packages = ["nano_claude"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "live: hits a real model API (skipped by default; run with -m live)",
+]
+addopts = "-m 'not live'"

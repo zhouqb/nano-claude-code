@@ -18,7 +18,7 @@ from prompt_toolkit.patch_stdout import patch_stdout
 from rich.console import Console
 from rich.table import Table
 
-from nano_claude.adk.driver import run_turn as query_loop
+from nano_claude.adk.driver import run_turn
 from nano_claude.agent.types import (
     REASONING_EFFORTS,
     AgentConfig,
@@ -254,7 +254,7 @@ async def _run_single_turn(
 
         prefetch = memory.start(user_input, _recent_tool_names(state)) if memory else None
         try:
-            result = await query_loop(
+            result = await run_turn(
                 state,
                 config,
                 settings=settings,
@@ -436,7 +436,7 @@ async def _repl(config: AgentConfig, settings: Settings, state: LoopState) -> No
             prefetch = memory.start(user_input, _recent_tool_names(state)) if memory else None
 
             try:
-                result = await query_loop(
+                result = await run_turn(
                     state,
                     config,
                     settings=settings,
