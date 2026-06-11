@@ -212,6 +212,56 @@ def test_set_session_log_file_is_noop_when_disabled():
     telemetry.set_session_log_file("/tmp/should-not-be-created.jsonl")  # must not raise
 
 
+async def test_driver_turn_emits_span_tree(exporters, tmp_path, monkeypatch):
+    """One turn through the driver → agent.turn ▷ chat <model> ▷ tool spans."""
+    import litellm
+
+    from nano_claude.adk.driver import run_turn
+    from nano_claude.agent.types import AgentConfig, LoopState
+    from nano_claude.permissions.settings import Settings
+    from tests.conftest import (
+        make_sequential_acompletion,
+        text_chunk,
+        tool_call_chunk,
+        usage_chunk,
+    )
+
+    spans, _ = exporters
+    monkeypatch.setattr(
+        litellm,
+        "acompletion",
+        make_sequential_acompletion(
+            [
+                [tool_call_chunk(0, "c1", "Bash", '{"command": "true"}'), usage_chunk(10, 5)],
+                [text_chunk("done"), usage_chunk(12, 2)],
+            ]
+        ),
+    )
+
+    state = LoopState(messages=[{"role": "user", "content": "run true"}])
+    config = AgentConfig(cwd=str(tmp_path), permission_mode=PermissionMode.BYPASS)
+    await run_turn(state, config, settings=Settings(path=tmp_path / "s.json"))
+
+    finished = spans.get_finished_spans()
+    by_name = {s.name: s for s in finished}
+
+    turn = by_name["agent.turn"]
+    assert turn.attributes["nano_claude.model"] == config.model
+    assert turn.attributes["nano_claude.subagent"] is True  # no storage in this test
+
+    chat_spans = [s for s in finished if s.name == f"chat {config.model}"]
+    assert len(chat_spans) == 2  # one per LLM request
+    first = next(s for s in chat_spans if s.attributes.get("gen_ai.response.tool_call_count"))
+    assert first.attributes["gen_ai.operation.name"] == "chat"
+    assert first.attributes["gen_ai.usage.input_tokens"] == 10
+    assert first.attributes["gen_ai.usage.output_tokens"] == 5
+    assert '"run true"' in first.attributes["gen_ai.messages"]
+    assert '"name": "Bash"' in first.attributes["gen_ai.response"]
+
+    tool_span = by_name["tool Bash"]
+    assert tool_span.attributes["nano_claude.tool.is_error"] is False
+
+
 def test_trace_mode_resolution(monkeypatch):
     monkeypatch.delenv("NANO_CLAUDE_TELEMETRY_TRACES", raising=False)
     monkeypatch.delenv("NANO_CLAUDE_TELEMETRY_CONSOLE", raising=False)

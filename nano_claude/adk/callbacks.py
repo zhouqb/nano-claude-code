@@ -26,10 +26,12 @@ turn's ``LoopState``/``AgentConfig``/``TurnGates``), and attaches them to the
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any
 
 from google.adk.models.llm_response import LlmResponse
+from opentelemetry import trace as otel_trace
 from pydantic import ValidationError
 
 from nano_claude.adk.convert import view_to_contents
@@ -42,7 +44,7 @@ from nano_claude.compaction.token_counter import record_input_tokens_from_usage
 from nano_claude.extensibility.hooks import HookEvent, execute_hooks
 from nano_claude.permissions.manager import Prompter, has_permission_to_use_tool
 from nano_claude.permissions.settings import Settings
-from nano_claude.telemetry import log
+from nano_claude.telemetry import log, set_content_attribute
 from nano_claude.tools.base import ToolContext
 from nano_claude.tools.registry import get_tool
 
@@ -111,6 +113,24 @@ def make_before_model_callback(
         llm_request.contents = contents
         llm_request.config.system_instruction = instruction
 
+        # This callback runs inside ADK's per-request LLM span; rename it to
+        # the historical ``chat <model>`` and attach the GenAI request
+        # attributes there (ADK's own bulk request capture is disabled in
+        # patches.py — these attributes are the span's content contract).
+        span = otel_trace.get_current_span()
+        if span.is_recording():
+            span.update_name(f"chat {config.model}")
+            span.set_attribute("gen_ai.operation.name", "chat")
+            span.set_attribute("gen_ai.request.model", config.model)
+            if config.reasoning_effort is not None:
+                span.set_attribute("gen_ai.request.reasoning_effort", config.reasoning_effort)
+            # ``gen_ai.messages`` holds the request input only; the assistant
+            # reply lives in ``gen_ai.response`` (set by after_model). Keeping
+            # them as two attributes — input first, response after — makes the
+            # exchange easier to read in the span, and a failed/aborted request
+            # still shows exactly what was sent.
+            set_content_attribute(span, "gen_ai.messages", view.messages)
+
         gates.expecting_response = True
         gates.assistant_started = False
         if callbacks.on_request_start:
@@ -135,6 +155,45 @@ def make_after_model_callback(state: LoopState, gates: TurnGates):
         if gates.expecting_response:
             state.turn_count += 1
             gates.expecting_response = False
+
+        # ADK rebinds this callback to the request's LLM span: annotate the
+        # response side (the request side was set in before_model).
+        span = otel_trace.get_current_span()
+        if span.is_recording():
+            if usage is not None:
+                if usage.prompt_token_count is not None:
+                    span.set_attribute("gen_ai.usage.input_tokens", usage.prompt_token_count)
+                if usage.candidates_token_count is not None:
+                    span.set_attribute("gen_ai.usage.output_tokens", usage.candidates_token_count)
+            if llm_response.finish_reason is not None:
+                span.set_attribute(
+                    "gen_ai.response.finish_reasons", [str(llm_response.finish_reason)]
+                )
+            parts = (llm_response.content and llm_response.content.parts) or []
+            reasoning = "".join(p.text or "" for p in parts if p.thought)
+            content = "".join(p.text or "" for p in parts if p.text and not p.thought)
+            tool_calls = [
+                {
+                    "id": p.function_call.id,
+                    "type": "function",
+                    "function": {
+                        "name": p.function_call.name,
+                        "arguments": json.dumps(p.function_call.args or {}),
+                    },
+                }
+                for p in parts
+                if p.function_call is not None
+            ]
+            span.set_attribute("gen_ai.response.tool_call_count", len(tool_calls))
+            # The assistant reply, broken into its parts (reasoning first, then
+            # content, then the calls it requested) so it reads top-to-bottom in
+            # the span and sits visually after ``gen_ai.messages``.
+            response_payload: dict[str, Any] = {"content": content}
+            if reasoning:
+                response_payload = {"reasoning": reasoning, **response_payload}
+            if tool_calls:
+                response_payload["tool_calls"] = tool_calls
+            set_content_attribute(span, "gen_ai.response", response_payload)
         return None
 
     return after_model_callback

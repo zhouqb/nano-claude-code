@@ -13,23 +13,22 @@ wire-fidelity tests in tests/test_adk_convert.py are the canary).
    sentinel dict instead, and ``before_tool_callback`` converts it into the
    old error message.
 
-2. **Skip trace serialization when nobody is recording.** ADK's
-   ``trace_call_llm`` JSON-serializes the full request on every LLM call even
-   when the OTel tracer is a no-op — wasted work, and it raises pydantic
-   serializer warnings for the raw-string function responses our converter
-   deliberately carries (see ``convert.py``). Skip it for non-recording
-   spans and silence the (expected) warning otherwise.
+2. **Disable ADK's bulk LLM-request trace capture.** ADK's ``trace_call_llm``
+   JSON-serializes the full request on every LLM call even when the OTel
+   tracer is a no-op — wasted work, it raises pydantic serializer warnings
+   for the raw-string function responses our converter deliberately carries
+   (see ``convert.py``), and its attribute scheme duplicates ours. The span
+   content contract is owned by our model callbacks instead (``chat <model>``
+   rename + ``gen_ai.*`` attributes, matching the old loop's spans).
 """
 
 from __future__ import annotations
 
 import json
-import warnings
 from typing import Any
 
 import google.adk.flows.llm_flows.base_llm_flow as _base_llm_flow
 import google.adk.models.lite_llm as _lite_llm
-from opentelemetry import trace as _otel_trace
 
 # Sentinel keys marking arguments that failed JSON parsing. The raw text and
 # the parse error ride along so the error message matches the old loop's.
@@ -38,7 +37,6 @@ INVALID_JSON_ERROR_KEY = "__nano_invalid_tool_json_error__"
 
 _applied = False
 _original_parse = _lite_llm._parse_tool_call_arguments
-_original_trace_call_llm = _base_llm_flow.trace_call_llm
 
 
 def invalid_json_error(args: dict[str, Any]) -> str | None:
@@ -59,11 +57,7 @@ def _lenient_parse_tool_call_arguments(arguments: Any) -> Any:
 
 
 def _quiet_trace_call_llm(*args: Any, **kwargs: Any) -> None:
-    if not _otel_trace.get_current_span().is_recording():
-        return
-    with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", message="Pydantic serializer warnings")
-        _original_trace_call_llm(*args, **kwargs)
+    return  # span attributes are owned by nano_claude.adk.callbacks
 
 
 def apply() -> None:
