@@ -12,7 +12,6 @@ import asyncio
 import json
 
 import litellm
-import pytest
 
 from nano_claude.adk.driver import run_turn
 from nano_claude.agent.types import AgentConfig, LoopState, StopReason
@@ -209,8 +208,7 @@ async def test_concurrent_permission_prompts_are_serialized(tmp_path, monkeypatc
     assert sorted(tool_results) == ["one", "two"]
 
 
-@pytest.mark.parametrize("auto_compact", [False])
-async def test_blocked_gate_skips_model_and_reports_notice(tmp_path, monkeypatch, auto_compact):
+async def test_blocked_gate_skips_model_and_reports_notice(tmp_path, monkeypatch):
     calls = []
 
     async def counting_acompletion(*args, **kwargs):
@@ -221,11 +219,13 @@ async def test_blocked_gate_skips_model_and_reports_notice(tmp_path, monkeypatch
 
     state = LoopState(messages=[{"role": "user", "content": "hi"}])
     state.last_input_tokens = 999_999  # context "full"
-    config = _config(tmp_path, auto_compact=auto_compact, context_window=100_000)
+    config = _config(tmp_path, auto_compact=False, context_window=100_000)
     result = await run_turn(state, config, settings=_settings(tmp_path))
 
     assert result.reason is StopReason.BLOCKED
-    assert "compact" in result.final_text.lower()
+    from nano_claude.adk.callbacks import BLOCKED_NOTICE
+
+    assert result.final_text == BLOCKED_NOTICE  # byte-identical to the old loop
     assert calls == []
 
 
