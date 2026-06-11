@@ -19,7 +19,13 @@ from nano_claude.permissions.manager import PromptOutcome
 from nano_claude.permissions.modes import PermissionMode
 from nano_claude.permissions.settings import Settings
 from nano_claude.tools.registry import clear_dynamic_tools, register_tools
-from tests.conftest import FakeStream, text_chunk, tool_call_chunk, usage_chunk
+from tests.conftest import (
+    FakeStream,
+    make_sequential_acompletion,
+    text_chunk,
+    tool_call_chunk,
+    usage_chunk,
+)
 
 
 class _Spec:
@@ -30,7 +36,12 @@ class _Spec:
 
 
 class _FakeSession:
+    def __init__(self):
+        self.calls: list[tuple] = []  # proof of (non-)execution for the gate tests
+
     async def call_tool(self, name, args):
+        self.calls.append((name, args))
+
         class _Result:
             isError = False
             content = [type("T", (), {"type": "text", "text": f"mcp ran {name} {args}"})()]
@@ -47,8 +58,13 @@ _RAW_SCHEMA = {
 
 
 @pytest.fixture
-def mcp_tool():
-    tool = MCPTool("filesystem", _FakeSession(), _Spec("list_dir", _RAW_SCHEMA))
+def mcp_session():
+    return _FakeSession()
+
+
+@pytest.fixture
+def mcp_tool(mcp_session):
+    tool = MCPTool("filesystem", mcp_session, _Spec("list_dir", _RAW_SCHEMA))
     register_tools([tool])
     yield tool
     clear_dynamic_tools()
@@ -80,11 +96,13 @@ async def test_tools_payload_advertises_schemas_verbatim(tmp_path, monkeypatch, 
     assert by_name["Bash"]["description"] == bash.description
 
 
-async def test_mcp_tool_ask_gate_prompts_through_driver(tmp_path, monkeypatch, mcp_tool):
+async def test_mcp_tool_ask_gate_prompts_through_driver(
+    tmp_path, monkeypatch, mcp_tool, mcp_session
+):
     monkeypatch.setattr(
         litellm,
         "acompletion",
-        _sequential(
+        make_sequential_acompletion(
             [
                 [
                     tool_call_chunk(0, "m1", "mcp__filesystem__list_dir", '{"path": "/x"}'),
@@ -112,13 +130,14 @@ async def test_mcp_tool_ask_gate_prompts_through_driver(tmp_path, monkeypatch, m
     assert prompts == ["mcp__filesystem__list_dir"]
     tool_msg = next(m for m in state.messages if m.get("role") == "tool")
     assert tool_msg["content"] == "mcp ran list_dir {'path': '/x'}"
+    assert mcp_session.calls == [("list_dir", {"path": "/x"})]
 
 
-async def test_mcp_tool_denied_when_prompt_refused(tmp_path, monkeypatch, mcp_tool):
+async def test_mcp_tool_denied_when_prompt_refused(tmp_path, monkeypatch, mcp_tool, mcp_session):
     monkeypatch.setattr(
         litellm,
         "acompletion",
-        _sequential(
+        make_sequential_acompletion(
             [
                 [
                     tool_call_chunk(0, "m1", "mcp__filesystem__list_dir", '{"path": "/x"}'),
@@ -129,7 +148,10 @@ async def test_mcp_tool_denied_when_prompt_refused(tmp_path, monkeypatch, mcp_to
         ),
     )
 
+    prompts = []
+
     async def prompter(tool, args, text):
+        prompts.append(tool.name)
         return PromptOutcome.DENY_ONCE
 
     state = LoopState(messages=[{"role": "user", "content": "list /x"}])
@@ -139,14 +161,8 @@ async def test_mcp_tool_denied_when_prompt_refused(tmp_path, monkeypatch, mcp_to
     )
 
     assert result.reason is StopReason.COMPLETED
+    assert prompts == ["mcp__filesystem__list_dir"]  # denial came from the user, not a shortcut
     tool_msg = next(m for m in state.messages if m.get("role") == "tool")
     assert tool_msg["content"].startswith("Permission denied")
-
-
-def _sequential(streams):
-    it = iter([FakeStream(s) for s in streams])
-
-    async def _acompletion(*args, **kwargs):
-        return next(it)
-
-    return _acompletion
+    # The contract this file exists to pin: external code never silently runs.
+    assert mcp_session.calls == []
