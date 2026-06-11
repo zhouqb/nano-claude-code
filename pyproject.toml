@@ -7,6 +7,11 @@ license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.12"
 dependencies = [
+    # Pinned exactly: all ADK usage is confined to nano_claude/adk/, and the
+    # extension-point APIs we build on (callbacks, BaseTool, BaseSessionService)
+    # have churned across minor versions. Bump deliberately, with the live
+    # integration test as the gate.
+    "google-adk==2.2.0",
     "litellm>=1.40.0",
     "pydantic>=2.0",
     "click>=8.0",
