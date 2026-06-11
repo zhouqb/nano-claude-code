@@ -42,6 +42,7 @@ from nano_claude.agent.types import AgentConfig, LoopCallbacks, LoopResult, Loop
 from nano_claude.agent.types import TextCallback as TextCallback  # re-export for callers
 from nano_claude.permissions.manager import Prompter, PromptOutcome
 from nano_claude.permissions.settings import Settings
+from nano_claude.session.restore import INTERRUPTED
 from nano_claude.session.storage import session_output_dir
 from nano_claude.telemetry import log, tracer
 from nano_claude.tools.base import ToolContext
@@ -258,6 +259,22 @@ async def run_turn(
                         )
         finally:
             await events.aclose()
+            # An abort (or an exception escaping mid-dispatch) can drop the
+            # function-response events for an already-recorded assistant
+            # tool_calls turn — the old loop could never end a turn that way,
+            # and an unanswered tool_call makes every later request API-invalid.
+            # Repair canonical state in place, byte-compatible with
+            # session.restore.repair_messages.
+            resolved_ids = {
+                m.get("tool_call_id") for m in state.messages if m.get("role") == "tool"
+            }
+            for msg in state.messages:
+                if msg.get("role") != "assistant":
+                    continue
+                for tc in msg.get("tool_calls") or []:
+                    if tc.get("id") and tc["id"] not in resolved_ids:
+                        record({"role": "tool", "tool_call_id": tc["id"], "content": INTERRUPTED})
+                        resolved_ids.add(tc["id"])
 
     if state.cancel_event.is_set() and gates.reason is None:
         gates.reason = StopReason.ABORTED

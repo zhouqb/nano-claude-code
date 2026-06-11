@@ -67,3 +67,50 @@ async def test_cancel_event_aborts(monkeypatch):
     result = await query_loop(state, AgentConfig())
 
     assert result.reason is StopReason.ABORTED
+
+
+async def test_abort_never_leaves_dangling_tool_calls(tmp_path, monkeypatch):
+    """Cancel landing mid-dispatch must not orphan a recorded tool_calls turn.
+
+    Reproduces the timing where the assistant tool_calls message is recorded,
+    the user aborts while the tool resolves, and the function-response event is
+    dropped — canonical state must still answer every call id, or every later
+    request in the session is API-invalid.
+    """
+    from nano_claude.permissions.manager import PromptOutcome
+    from nano_claude.permissions.modes import PermissionMode
+    from nano_claude.permissions.settings import Settings
+    from tests.conftest import make_sequential_acompletion, tool_call_chunk
+
+    state = LoopState(messages=[{"role": "user", "content": "run it"}])
+
+    monkeypatch.setattr(
+        litellm,
+        "acompletion",
+        make_sequential_acompletion(
+            [
+                [tool_call_chunk(0, "c1", "Bash", '{"command": "echo hi"}'), usage_chunk(10, 5)],
+                [text_chunk("never"), usage_chunk(12, 2)],
+            ]
+        ),
+    )
+
+    async def cancelling_prompter(tool, args, text):
+        state.cancel_event.set()  # Esc lands while the permission prompt is up
+        return PromptOutcome.ALLOW_ONCE
+
+    config = AgentConfig(cwd=str(tmp_path), permission_mode=PermissionMode.DEFAULT)
+    result = await query_loop(
+        state, config, settings=Settings(path=tmp_path / "s.json"), prompter=cancelling_prompter
+    )
+
+    assert result.reason is StopReason.ABORTED
+    call_ids = {
+        tc["id"]
+        for m in state.messages
+        if m.get("role") == "assistant"
+        for tc in (m.get("tool_calls") or [])
+    }
+    result_ids = {m["tool_call_id"] for m in state.messages if m.get("role") == "tool"}
+    assert call_ids, "the assistant tool_calls turn must have been recorded"
+    assert call_ids == result_ids  # every call answered — no dangling ids
