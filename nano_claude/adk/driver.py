@@ -37,6 +37,7 @@ from nano_claude.adk.callbacks import (
 )
 from nano_claude.adk.convert import event_to_messages
 from nano_claude.adk.patches import apply as _apply_adk_patches
+from nano_claude.adk.session_service import JsonlSessionService
 from nano_claude.adk.tool_adapter import NanoToolAdapter
 from nano_claude.agent.types import AgentConfig, LoopCallbacks, LoopResult, LoopState, StopReason
 from nano_claude.agent.types import TextCallback as TextCallback  # re-export for callers
@@ -138,11 +139,23 @@ async def run_turn(
         todos=state.todos,  # TodoWrite mutates this list in place
     )
 
-    def record(message: dict) -> None:
-        """Append a message to state and persist it (for crash recovery)."""
+    def track(message: dict) -> None:
+        """Append a message to canonical state (persistence handled elsewhere).
+
+        Used for event-derived messages: the JSONL write already happened in
+        ``JsonlSessionService.append_event`` when the Runner stored the event.
+        """
         state.messages.append(message)
         if message.get("role") == "assistant":
             state.last_assistant_at = time.time()  # Layer 3 microcompact time gate
+
+    def record(message: dict) -> None:
+        """Append a message to state *and* persist it (for crash recovery).
+
+        Used for injected messages (memory recall, todo reminders) that never
+        become ADK events, so the driver is their only writer.
+        """
+        track(message)
         if state.storage is not None:
             state.storage.append_message(message)
 
@@ -180,7 +193,14 @@ async def run_turn(
         on_tool_error_callback=make_on_tool_error_callback(),
     )
 
-    session_service = InMemorySessionService()
+    session_service: Any
+    if state.storage is not None:
+        # Persisted session: the service shares the open SessionStorage (and
+        # its debounce queue), so model/tool events land in the same JSONL.
+        session_service = JsonlSessionService(config.cwd)
+        session_service.adopt_storage(state.storage)
+    else:
+        session_service = InMemorySessionService()  # subagents: transport only
     adk_session = await session_service.create_session(
         app_name=_APP_NAME, user_id=_USER_ID, session_id=session_id or "subagent"
     )
@@ -242,7 +262,7 @@ async def run_turn(
                 partial_parts.clear()  # response completed; nothing in flight
                 recorded = event_to_messages(event)
                 for msg in recorded:
-                    record(msg)
+                    track(msg)  # session service persisted the event already
                 if event.content and event.content.role == "model":
                     if not recorded and gates.reason is None:
                         # A genuinely empty final response: keep the old loop's

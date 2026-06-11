@@ -121,6 +121,60 @@ def _response_to_text(response: Any) -> str:
     return "" if response is None else json.dumps(response)
 
 
+def messages_to_events(
+    messages: list[dict],
+    *,
+    agent_name: str,
+    timestamps: list[float] | None = None,
+    event_ids: list[str] | None = None,
+) -> list[Event]:
+    """Convert an OpenAI-format message list into ADK ``Event`` objects.
+
+    The inverse of :func:`event_to_messages`, used by the session service's
+    ``get_session`` so a persisted JSONL session is consumable through ADK
+    APIs. ``system`` messages are skipped (they live in the request's
+    system_instruction, not the event log). ``timestamps``/``event_ids``
+    parallel ``messages`` when provided (from the JSONL records).
+    """
+    events: list[Event] = []
+    call_names: dict[str, str] = {}
+    for i, msg in enumerate(messages):
+        role = msg.get("role")
+        content_text = msg.get("content")
+        extra: dict = {}
+        if event_ids is not None and event_ids[i]:
+            extra["id"] = event_ids[i]
+        if timestamps is not None and timestamps[i]:
+            extra["timestamp"] = timestamps[i]
+
+        if role == "system":
+            continue
+        if role == "assistant":
+            parts: list[types.Part] = []
+            if content_text:
+                parts.append(types.Part(text=content_text))
+            for tc in msg.get("tool_calls") or []:
+                if tc.get("id") and (tc.get("function") or {}).get("name"):
+                    call_names[tc["id"]] = tc["function"]["name"]
+                parts.append(_function_call_part(tc))
+            if not parts:
+                parts = [types.Part(text="")]
+            content = types.Content(role="model", parts=parts)
+            events.append(Event(author=agent_name, invocation_id="", content=content, **extra))
+            continue
+        if role == "tool":
+            call_id = msg.get("tool_call_id")
+            part = _function_response_part(
+                call_id, call_names.get(call_id or ""), content_text or ""
+            )
+            content = types.Content(role="user", parts=[part])
+            events.append(Event(author=agent_name, invocation_id="", content=content, **extra))
+            continue
+        content = types.Content(role="user", parts=[types.Part(text=content_text or "")])
+        events.append(Event(author="user", invocation_id="", content=content, **extra))
+    return events
+
+
 def event_to_messages(event: Event) -> list[dict]:
     """Convert a non-partial ADK ``Event`` into OpenAI-format message dicts.
 
