@@ -9,11 +9,36 @@ from __future__ import annotations
 
 import asyncio
 import os
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
 from nano_claude.permissions.modes import PermissionMode
+from nano_claude.tools.base import ToolResult
+
+# Callback invoked with each text delta as it streams in.
+TextCallback = Callable[[str], None]
+
+
+@dataclass
+class LoopCallbacks:
+    """Optional display hooks; the REPL wires these to rich output."""
+
+    on_text: TextCallback | None = None
+    # Fired right before each model request — the REPL shows a spinner until the
+    # first token or tool call arrives. Subagents pass no callbacks, so they're
+    # silent here.
+    on_request_start: Callable[[], None] | None = None
+    on_assistant_start: Callable[[], None] | None = None
+    on_tool_start: Callable[[str, dict], None] | None = None
+    on_tool_end: Callable[[str, ToolResult], None] | None = None
+    on_tool_denied: Callable[[str, str], None] | None = None
+    on_compact: Callable[[], None] | None = None
+    on_compact_disabled: Callable[[], None] | None = None
+    on_context_warning: Callable[[], None] | None = None
+    on_snip: Callable[[int], None] | None = None
+    on_collapse: Callable[[], None] | None = None
 
 
 class StopReason(StrEnum):

@@ -6,12 +6,12 @@ import asyncio
 
 import pytest
 
-from nano_claude.agent.loop import (
+from nano_claude.agent.reminders import (
     TODO_TURNS_BETWEEN_REMINDERS,
     TODO_TURNS_SINCE_WRITE,
-    _build_todo_reminder,
-    _maybe_todo_reminder,
-    _todo_turn_counts,
+    build_todo_reminder,
+    maybe_todo_reminder,
+    todo_turn_counts,
 )
 from nano_claude.agent.types import LoopState
 from nano_claude.permissions.modes import PermissionMode
@@ -117,12 +117,12 @@ def _assistant_turns(n: int) -> list[dict]:
 
 
 def test_turn_counts_no_history():
-    assert _todo_turn_counts([]) == (0, 0)
+    assert todo_turn_counts([]) == (0, 0)
 
 
 def test_turn_counts_counts_assistant_turns():
     msgs = [{"role": "user", "content": "hi"}, *_assistant_turns(3)]
-    since_write, since_reminder = _todo_turn_counts(msgs)
+    since_write, since_reminder = todo_turn_counts(msgs)
     assert since_write == 3
     assert since_reminder == 3
 
@@ -135,14 +135,14 @@ def test_turn_counts_resets_after_todowrite():
         },
         *_assistant_turns(2),
     ]
-    since_write, _ = _todo_turn_counts(msgs)
+    since_write, _ = todo_turn_counts(msgs)
     # The TodoWrite turn itself is not counted; only the 2 turns after it.
     assert since_write == 2
 
 
 def test_reminder_fires_after_threshold():
     state = LoopState(messages=_assistant_turns(TODO_TURNS_SINCE_WRITE))
-    reminder = _maybe_todo_reminder(state, allowed_tools=None)
+    reminder = maybe_todo_reminder(state, allowed_tools=None)
     assert reminder is not None
     assert reminder["role"] == "user"
     assert "hasn't been used recently" in reminder["content"]
@@ -151,21 +151,21 @@ def test_reminder_fires_after_threshold():
 
 def test_reminder_silent_before_threshold():
     state = LoopState(messages=_assistant_turns(TODO_TURNS_SINCE_WRITE - 1))
-    assert _maybe_todo_reminder(state, allowed_tools=None) is None
+    assert maybe_todo_reminder(state, allowed_tools=None) is None
 
 
 def test_reminder_suppressed_when_todowrite_disallowed():
     state = LoopState(messages=_assistant_turns(TODO_TURNS_SINCE_WRITE))
-    assert _maybe_todo_reminder(state, allowed_tools=["Read"]) is None
+    assert maybe_todo_reminder(state, allowed_tools=["Read"]) is None
 
 
 def test_reminder_counts_as_reminder_turn():
     # A prior reminder resets the between-reminders counter, so a fresh reminder
     # only fires again after TURNS_BETWEEN_REMINDERS more assistant turns.
-    reminder = _build_todo_reminder([])
+    reminder = build_todo_reminder([])
     msgs = _assistant_turns(TODO_TURNS_SINCE_WRITE) + [reminder] + _assistant_turns(1)
     state = LoopState(messages=msgs)
-    assert _maybe_todo_reminder(state, allowed_tools=None) is None
+    assert maybe_todo_reminder(state, allowed_tools=None) is None
 
     msgs2 = (
         _assistant_turns(TODO_TURNS_SINCE_WRITE)
@@ -173,10 +173,10 @@ def test_reminder_counts_as_reminder_turn():
         + _assistant_turns(TODO_TURNS_BETWEEN_REMINDERS)
     )
     state2 = LoopState(messages=msgs2)
-    assert _maybe_todo_reminder(state2, allowed_tools=None) is not None
+    assert maybe_todo_reminder(state2, allowed_tools=None) is not None
 
 
 def test_reminder_includes_current_todos():
-    reminder = _build_todo_reminder([_item("Ship feature", "in_progress")])
+    reminder = build_todo_reminder([_item("Ship feature", "in_progress")])
     assert "Ship feature" in reminder["content"]
     assert "[in_progress]" in reminder["content"]

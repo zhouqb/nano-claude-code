@@ -19,18 +19,26 @@ from opentelemetry.sdk._logs.export import InMemoryLogRecordExporter
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from nano_claude import telemetry
-from nano_claude.agent.loop import LoopCallbacks, _CallPlan, _run_call
+from nano_claude.adk.tool_adapter import NanoToolAdapter
 from nano_claude.permissions.modes import PermissionMode
-from nano_claude.tools.base import ToolContext, ToolResult
+from nano_claude.tools.base import PermissionDecision, Tool, ToolContext, ToolResult
 
 
-class _FakeTool:
+class _FakeTool(Tool):
+    """Raw-args tool so the adapter skips Pydantic validation."""
+
+    description = "fake tool"
+    reads_raw_args = True
+
     def __init__(self, name: str = "fake", result: ToolResult | None = None) -> None:
         self.name = name
         self._result = result or ToolResult(output="ok")
 
     async def call(self, args, context) -> ToolResult:  # noqa: ANN001
         return self._result
+
+    async def check_permissions(self, args, context) -> PermissionDecision:  # noqa: ANN001
+        return PermissionDecision(behavior="allow")
 
 
 def _context() -> ToolContext:
@@ -39,6 +47,11 @@ def _context() -> ToolContext:
         cancel_event=asyncio.Event(),
         permission_mode=PermissionMode.DEFAULT,
     )
+
+
+async def _run_tool(tool: _FakeTool, args: dict) -> str:
+    """Run a tool through the adapter (the span now lives there)."""
+    return await NanoToolAdapter(tool, _context()).run_async(args=args, tool_context=None)
 
 
 @pytest.fixture(scope="module")
@@ -66,9 +79,8 @@ def test_init_disabled_without_env(monkeypatch):
 
 async def test_tool_call_emits_span(exporters):
     spans, _ = exporters
-    plan = _CallPlan(tool=_FakeTool(), args_model=None, args_dict={"path": "x"})
 
-    out = await _run_call(plan, _context(), LoopCallbacks(), session_id="sess")
+    out = await _run_tool(_FakeTool(), {"path": "x"})
 
     assert out == "ok"
     tool_spans = [s for s in spans.get_finished_spans() if s.name == "tool fake"]
@@ -86,13 +98,8 @@ async def test_failed_tool_marks_span_error(exporters):
     from opentelemetry.trace.status import StatusCode
 
     spans, _ = exporters
-    plan = _CallPlan(
-        tool=_FakeTool(result=ToolResult.fail("boom")),
-        args_model=None,
-        args_dict={},
-    )
 
-    await _run_call(plan, _context(), LoopCallbacks(), session_id="sess")
+    await _run_tool(_FakeTool(result=ToolResult.fail("boom")), {})
 
     tool_spans = [s for s in spans.get_finished_spans() if s.name == "tool fake"]
     assert tool_spans[0].status.status_code is StatusCode.ERROR
@@ -103,9 +110,8 @@ async def test_failed_tool_marks_span_error(exporters):
 async def test_content_capture_can_be_disabled(exporters, monkeypatch):
     monkeypatch.setenv("NANO_CLAUDE_TELEMETRY_CAPTURE_CONTENT", "0")
     spans, _ = exporters
-    plan = _CallPlan(tool=_FakeTool(), args_model=None, args_dict={"path": "x"})
 
-    await _run_call(plan, _context(), LoopCallbacks(), session_id="sess")
+    await _run_tool(_FakeTool(), {"path": "x"})
 
     attrs = [s for s in spans.get_finished_spans() if s.name == "tool fake"][0].attributes
     assert "nano_claude.tool.arguments" not in attrs
@@ -162,9 +168,8 @@ def test_set_content_attribute_structured_stays_valid_json(monkeypatch):
 
 async def test_tool_call_emits_log(exporters):
     _, logs = exporters
-    plan = _CallPlan(tool=_FakeTool(), args_model=None, args_dict={})
 
-    await _run_call(plan, _context(), LoopCallbacks(), session_id="sess")
+    await _run_tool(_FakeTool(), {})
 
     records = logs.get_finished_logs()
     messages = [r.log_record.body for r in records]

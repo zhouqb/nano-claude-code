@@ -1,9 +1,49 @@
-"""Shared test fixtures and fakes for the streaming agent loop."""
+"""Shared test fixtures and fakes for the agent.
+
+The LLM seam is unchanged from the pre-ADK days: tests monkeypatch
+``litellm.acompletion``. The ADK driver's ``LiteLlm`` wrapper calls straight
+through to it, so these fakes now exercise the *entire* production stack
+(Runner → LlmAgent → LiteLlm → chunk aggregation) rather than a bespoke loop.
+
+The chunk helpers therefore build real ``litellm`` response types — ADK's
+stream parser type-checks against ``ModelResponseStream`` — but their names
+and signatures are unchanged, so tests read the same as before. The same
+fakes also serve the modules that still call ``litellm.acompletion``
+directly (compactor, memory recall/extract).
+"""
 
 from __future__ import annotations
 
 from collections.abc import Iterable
-from types import SimpleNamespace
+
+import pytest
+from litellm.types.utils import (
+    ChatCompletionDeltaToolCall,
+    Delta,
+    Function,
+    ModelResponseStream,
+    StreamingChoices,
+    Usage,
+)
+
+
+@pytest.fixture(autouse=True)
+def _route_adk_through_litellm(monkeypatch):
+    """Keep ``monkeypatch.setattr(litellm, "acompletion", ...)`` effective.
+
+    ADK's ``lite_llm`` module lazily binds ``litellm.acompletion`` into its own
+    namespace on first use, after which patching the ``litellm`` module no
+    longer reaches it. Re-route ADK's bound name through the ``litellm`` module
+    attribute at call time so the historical seam keeps working everywhere.
+    """
+    import litellm
+    from google.adk.models import lite_llm as _adk_lite_llm
+
+    async def _delegate(**kwargs):
+        return await litellm.acompletion(**kwargs)
+
+    _adk_lite_llm._ensure_litellm_imported()
+    monkeypatch.setattr(_adk_lite_llm, "acompletion", _delegate)
 
 
 class FakeStream:
@@ -25,34 +65,26 @@ class FakeStream:
 
 def text_chunk(content: str):
     """A streaming chunk carrying a content delta (OpenAI-normalised shape)."""
-    return SimpleNamespace(
-        choices=[SimpleNamespace(delta=SimpleNamespace(content=content))],
-        usage=None,
-    )
+    return ModelResponseStream(choices=[StreamingChoices(delta=Delta(content=content))])
 
 
 def usage_chunk(prompt_tokens: int, completion_tokens: int):
     """A final chunk carrying token usage and no content."""
-    return SimpleNamespace(
-        choices=[SimpleNamespace(delta=SimpleNamespace(content=None))],
-        usage=SimpleNamespace(
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
-            prompt_tokens_details=None,
-        ),
-    )
+    chunk = ModelResponseStream(choices=[StreamingChoices(delta=Delta(content=None))])
+    chunk.usage = Usage(prompt_tokens=prompt_tokens, completion_tokens=completion_tokens)
+    return chunk
 
 
 def tool_call_chunk(index: int, call_id: str, name: str, arguments: str):
     """A streaming chunk carrying an OpenAI-style tool_call delta."""
-    tc = SimpleNamespace(
+    tc = ChatCompletionDeltaToolCall(
         index=index,
         id=call_id,
-        function=SimpleNamespace(name=name, arguments=arguments),
+        type="function",
+        function=Function(name=name, arguments=arguments),
     )
-    return SimpleNamespace(
-        choices=[SimpleNamespace(delta=SimpleNamespace(content=None, tool_calls=[tc]))],
-        usage=None,
+    return ModelResponseStream(
+        choices=[StreamingChoices(delta=Delta(content=None, tool_calls=[tc]))]
     )
 
 

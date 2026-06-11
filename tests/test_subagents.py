@@ -8,7 +8,7 @@ import json
 import litellm
 import pytest
 
-from nano_claude.agent.loop import query_loop
+from nano_claude.adk.driver import run_turn as query_loop
 from nano_claude.agent.types import AgentConfig, LoopState, StopReason, TokenUsage
 from nano_claude.permissions.modes import PermissionMode
 from nano_claude.permissions.settings import Settings

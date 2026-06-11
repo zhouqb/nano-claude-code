@@ -45,8 +45,7 @@ from nano_claude.compaction.tool_result_budget import (
 from nano_claude.session.storage import session_output_dir
 
 if TYPE_CHECKING:
-    from nano_claude.agent.loop import LoopCallbacks
-    from nano_claude.agent.types import AgentConfig, LoopState
+    from nano_claude.agent.types import AgentConfig, LoopCallbacks, LoopState
 
 
 @dataclass

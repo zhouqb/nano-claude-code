@@ -19,7 +19,9 @@ def test_cli_prompt_runs_single_turn(tmp_path, monkeypatch):
         "acompletion",
         make_sequential_acompletion([[text_chunk("done"), usage_chunk(3, 2)]]),
     )
-    monkeypatch.setattr("nano_claude.main.Settings.load", lambda: Settings(path=tmp_path / "s.json"))
+    monkeypatch.setattr(
+        "nano_claude.main.Settings.load", lambda: Settings(path=tmp_path / "s.json")
+    )
     monkeypatch.setattr("nano_claude.main.register_known_models", lambda: None)
     monkeypatch.setattr("nano_claude.main.init_telemetry", lambda: False)
     monkeypatch.setattr("nano_claude.main.shutdown_telemetry", lambda: None)
@@ -56,7 +58,9 @@ def test_cli_prompt_defaults_to_bypass_for_one_shot(tmp_path, monkeypatch):
             ]
         ),
     )
-    monkeypatch.setattr("nano_claude.main.Settings.load", lambda: Settings(path=tmp_path / "s.json"))
+    monkeypatch.setattr(
+        "nano_claude.main.Settings.load", lambda: Settings(path=tmp_path / "s.json")
+    )
     monkeypatch.setattr("nano_claude.main.register_known_models", lambda: None)
     monkeypatch.setattr("nano_claude.main.init_telemetry", lambda: False)
     monkeypatch.setattr("nano_claude.main.shutdown_telemetry", lambda: None)
