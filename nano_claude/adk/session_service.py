@@ -54,7 +54,13 @@ _AGENT_NAME = "nano_claude"
 
 
 class JsonlSessionService(BaseSessionService):
-    """ADK session persistence backed by nano's per-project JSONL files."""
+    """ADK session persistence backed by nano's per-project JSONL files.
+
+    Contract: ``create_session``/``get_session`` return the *live* cached
+    ``Session`` object (not a copy, unlike ADK's InMemorySessionService) —
+    the driver's abort reconcile reads ``session.events`` to recover events
+    that were persisted but never consumed, and relies on that identity.
+    """
 
     def __init__(self, cwd: str, *, root: Path = DEFAULT_ROOT):
         self._cwd = cwd
