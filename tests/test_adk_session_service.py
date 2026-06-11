@@ -137,3 +137,75 @@ async def test_list_and_delete_sessions(tmp_path):
     await service.delete_session(app_name="nano-claude", user_id="u", session_id="sid")
     assert not storage.path.exists()
     assert (await service.list_sessions(app_name="nano-claude")).sessions == []
+
+
+async def test_abort_race_keeps_session_resumable(tmp_path, monkeypatch):
+    """A tool result persisted by the service but dropped by an abort must not
+    be double-answered by the driver's repair — the append-only JSONL would be
+    permanently API-invalid on --resume (two tool messages for one call id).
+    """
+    import litellm
+
+    from nano_claude.adk.driver import run_turn
+    from nano_claude.agent.types import AgentConfig, LoopState, StopReason
+    from nano_claude.permissions.modes import PermissionMode
+    from nano_claude.permissions.settings import Settings
+    from nano_claude.tools.base import PermissionDecision, Tool, ToolResult
+    from nano_claude.tools.registry import clear_dynamic_tools, register_tools
+    from tests.conftest import FakeStream, text_chunk, tool_call_chunk, usage_chunk
+
+    class CancelOnFinish(Tool):
+        """Completes successfully, then the user's Esc lands immediately."""
+
+        name = "CancelOnFinish"
+        description = "test tool"
+        reads_raw_args = True
+
+        def to_api_schema(self):
+            return {
+                "type": "function",
+                "function": {
+                    "name": self.name,
+                    "description": self.description,
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+
+        async def call(self, args, context) -> ToolResult:
+            context.cancel_event.set()  # abort observed only after completion
+            return ToolResult(output="real output")
+
+        async def check_permissions(self, args, context) -> PermissionDecision:
+            return PermissionDecision(behavior="allow")
+
+    register_tools([CancelOnFinish()])
+    try:
+        streams = iter(
+            [
+                FakeStream([tool_call_chunk(0, "c1", "CancelOnFinish", "{}"), usage_chunk(5, 2)]),
+                FakeStream([text_chunk("never"), usage_chunk(6, 1)]),
+            ]
+        )
+
+        async def _acompletion(*args, **kwargs):
+            return next(streams)
+
+        monkeypatch.setattr(litellm, "acompletion", _acompletion)
+
+        storage = SessionStorage(session_file(str(tmp_path), "sid", root=tmp_path / "root"), "sid")
+        state = LoopState(messages=[{"role": "user", "content": "go"}], storage=storage)
+        storage.append_message(state.messages[0])  # main.py persists the user msg
+        config = AgentConfig(cwd=str(tmp_path), permission_mode=PermissionMode.BYPASS)
+
+        result = await run_turn(state, config, settings=Settings(path=tmp_path / "s.json"))
+        await storage.flush()
+
+        assert result.reason is StopReason.ABORTED
+        restored = load_session(storage.path)
+        tool_msgs = [m for m in restored if m.get("role") == "tool"]
+        # Exactly one result for the call — the real one, not a duplicate repair.
+        assert tool_msgs == [{"role": "tool", "tool_call_id": "c1", "content": "real output"}]
+        # Live state and the resumable JSONL agree.
+        assert restored == state.messages
+    finally:
+        clear_dynamic_tools()
