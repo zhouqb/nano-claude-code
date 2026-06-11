@@ -41,3 +41,10 @@ def record_input_tokens(state: Any, chunk: Any) -> None:
     prompt_tokens = getattr(usage, "prompt_tokens", None)
     if prompt_tokens:
         state.last_input_tokens = prompt_tokens
+
+
+def record_input_tokens_from_usage(state: Any, usage_metadata: Any) -> None:
+    """Update ``state.last_input_tokens`` from genai usage metadata (ADK path)."""
+    prompt_tokens = getattr(usage_metadata, "prompt_token_count", None)
+    if prompt_tokens:
+        state.last_input_tokens = prompt_tokens

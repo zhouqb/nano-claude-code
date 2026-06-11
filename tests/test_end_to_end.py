@@ -11,7 +11,7 @@ import json
 import litellm
 import pytest
 
-from nano_claude.agent.loop import query_loop
+from nano_claude.adk.driver import run_turn as query_loop
 from nano_claude.agent.types import AgentConfig, LoopState, StopReason
 from nano_claude.extensibility.hooks import HookDefinition, clear_hooks, register_hooks
 from nano_claude.extensibility.skills import (

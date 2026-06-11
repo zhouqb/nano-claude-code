@@ -7,8 +7,8 @@ so one Ctrl-C stops everything. Only the subagent's final assistant text
 crosses back to the parent; its intermediate messages never enter the parent
 transcript. Token usage rolls up to the parent for ``/cost`` accounting.
 
-``query_loop`` and the tool registry are imported lazily inside the functions
-to break the registry → Task tool → runner → loop → registry import cycle.
+``run_turn`` and the tool registry are imported lazily inside the functions
+to break the registry → Task tool → runner → driver → registry import cycle.
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ def build_subagent_prompt(agent: AgentDefinition) -> str:
 
 async def run_subagent_loop(agent: AgentDefinition, prompt: str, parent: ToolContext) -> LoopResult:
     """Run ``agent`` on ``prompt`` in an isolated loop and return its result."""
-    from nano_claude.agent.loop import query_loop
+    from nano_claude.adk.driver import run_turn as query_loop
 
     sub_config = AgentConfig(
         model=agent.model or parent.parent_model or AgentConfig.model,

@@ -12,7 +12,7 @@ from __future__ import annotations
 from rich.console import Console
 from rich.markup import escape
 
-from nano_claude.agent.loop import LoopCallbacks
+from nano_claude.agent.types import LoopCallbacks
 from nano_claude.tools.base import ToolResult
 
 # Tool args worth surfacing in the one-line tool header, in priority order.

@@ -6,7 +6,7 @@ import json
 
 import litellm
 
-from nano_claude.agent.loop import query_loop
+from nano_claude.adk.driver import run_turn as query_loop
 from nano_claude.agent.types import AgentConfig, LoopState, StopReason
 from nano_claude.permissions.manager import PromptOutcome
 from nano_claude.permissions.modes import PermissionMode

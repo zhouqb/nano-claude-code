@@ -18,7 +18,7 @@ from prompt_toolkit.patch_stdout import patch_stdout
 from rich.console import Console
 from rich.table import Table
 
-from nano_claude.agent.loop import query_loop
+from nano_claude.adk.driver import run_turn as query_loop
 from nano_claude.agent.types import (
     REASONING_EFFORTS,
     AgentConfig,

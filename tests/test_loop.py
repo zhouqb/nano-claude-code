@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import litellm
 
-from nano_claude.agent.loop import query_loop
+from nano_claude.adk.driver import run_turn as query_loop
 from nano_claude.agent.types import AgentConfig, LoopState, StopReason
 from tests.conftest import make_acompletion, text_chunk, usage_chunk
 

@@ -167,7 +167,7 @@ class ExtractionManager:
             self._launch()
 
     async def _run(self, end: int) -> None:
-        from nano_claude.agent.loop import query_loop
+        from nano_claude.adk.driver import run_turn as query_loop
 
         excerpt = _format_excerpt(self.state.messages[self.cursor : end])
         if not excerpt.strip():

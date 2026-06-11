@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import litellm
 
-from nano_claude.agent.loop import LoopCallbacks, query_loop
-from nano_claude.agent.types import AgentConfig, LoopState, StopReason
+from nano_claude.adk.driver import run_turn as query_loop
+from nano_claude.agent.types import AgentConfig, LoopCallbacks, LoopState, StopReason
 from nano_claude.compaction.pipeline import run_context_management
 from tests.conftest import make_acompletion, text_chunk, usage_chunk
 
