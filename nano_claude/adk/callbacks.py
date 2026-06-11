@@ -169,7 +169,7 @@ def make_after_model_callback(state: LoopState, gates: TurnGates):
                 span.set_attribute(
                     "gen_ai.response.finish_reasons", [str(llm_response.finish_reason)]
                 )
-            parts = llm_response.content.parts if llm_response.content else []
+            parts = (llm_response.content and llm_response.content.parts) or []
             reasoning = "".join(p.text or "" for p in parts if p.thought)
             content = "".join(p.text or "" for p in parts if p.text and not p.thought)
             tool_calls = [
